@@ -34,3 +34,18 @@ CREATE TABLE IF NOT EXISTS recipes_served (
     full_text  TEXT NOT NULL,
     created    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Access control: only these users (plus the owner) get served.
+CREATE TABLE IF NOT EXISTS allowed_users (
+    chat_id  INTEGER PRIMARY KEY,
+    note     TEXT,
+    added    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Activation codes you hand out. Redeeming one adds that user to allowed_users.
+CREATE TABLE IF NOT EXISTS access_codes (
+    code     TEXT PRIMARY KEY,
+    note     TEXT,               -- e.g. "Coach Mike batch 1"
+    used_by  INTEGER,            -- chat_id that redeemed it (NULL = unused)
+    created  TEXT NOT NULL DEFAULT (datetime('now'))
+);

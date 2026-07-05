@@ -148,3 +148,60 @@ def recent_recipe_titles(chat_id: int, limit: int = 5) -> list[str]:
             (chat_id, limit),
         ).fetchall()
         return [r["title"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# access control — allowlist + activation codes
+# ---------------------------------------------------------------------------
+def is_allowed(chat_id: int) -> bool:
+    with _conn() as conn:
+        row = conn.execute("SELECT 1 FROM allowed_users WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row is not None
+
+
+def allow_user(chat_id: int, note: str = "") -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO allowed_users (chat_id, note) VALUES (?, ?)",
+            (chat_id, note),
+        )
+
+
+def deny_user(chat_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM allowed_users WHERE chat_id = ?", (chat_id,))
+
+
+def list_allowed() -> list[tuple[int, str]]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT chat_id, note FROM allowed_users ORDER BY added").fetchall()
+        return [(r["chat_id"], r["note"] or "") for r in rows]
+
+
+def create_code(code: str, note: str = "") -> None:
+    with _conn() as conn:
+        conn.execute("INSERT INTO access_codes (code, note) VALUES (?, ?)", (code, note))
+
+
+def redeem_code(code: str, chat_id: int) -> bool:
+    """If the code exists and is unused, mark it used and allow the user. Returns success."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT used_by, note FROM access_codes WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None or row["used_by"] is not None:
+            return False
+        conn.execute("UPDATE access_codes SET used_by = ? WHERE code = ?", (chat_id, code))
+        conn.execute(
+            "INSERT OR REPLACE INTO allowed_users (chat_id, note) VALUES (?, ?)",
+            (chat_id, f"code:{code} {row['note'] or ''}".strip()),
+        )
+        return True
+
+
+def list_codes() -> list[tuple[str, str, int]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT code, note, used_by FROM access_codes ORDER BY created"
+        ).fetchall()
+        return [(r["code"], r["note"] or "", r["used_by"]) for r in rows]

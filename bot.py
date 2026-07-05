@@ -7,6 +7,7 @@ equipment, and skill. Bilingual (ES/EN). Palate memory in SQLite. Brain = Claude
 import os
 import re
 import time
+import secrets
 import traceback
 
 import requests
@@ -23,6 +24,20 @@ TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 MODEL = os.environ.get("MODEL", "claude-opus-4-8")
+
+# Your own Telegram numeric ID. The owner can manage the allowlist and is always
+# served. Set this in Coolify after you learn your ID via the /id command.
+OWNER_ID = os.environ.get("OWNER_ID", "").strip()
+
+
+def is_owner(chat_id: int) -> bool:
+    return OWNER_ID != "" and str(chat_id) == OWNER_ID
+
+
+def new_code() -> str:
+    """A short, readable activation code like CHEF-7K3P."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no confusable 0/O/1/I
+    return "CHEF-" + "".join(secrets.choice(alphabet) for _ in range(4))
 
 # The cooking doctrine — the soul of the bot. Written in English for precision;
 # the chef still replies in the USER's language (see the LANGUAGE rule).
@@ -87,6 +102,15 @@ UI = {
         "busy": "El chef está saturado, dame un minuto. 🔥",
         "brain": "Problema con el cerebro del chef ({v}). Intenta de nuevo.",
         "burned": "Algo se quemó en la cocina. Ya lo reviso.",
+        "your_id": "Tu ID de Telegram es: {v}",
+        "denied": "🔒 Necesitas un código de acceso para usar el chef.\nEnvía: /activar TU-CODIGO",
+        "activated": "✅ ¡Acceso activado! Bienvenido a la cocina. Escribe /help.",
+        "code_bad": "❌ Código inválido o ya usado.",
+        "code_new": "Nuevo código: {v}",
+        "allowed_list": "Usuarios con acceso:\n{v}",
+        "codes_list": "Códigos:\n{v}",
+        "user_allowed": "✅ Usuario {v} agregado.",
+        "user_denied": "🚫 Usuario {v} removido.",
     },
     "en": {
         "welcome": "🔪 Dissident Labs Chef at your service.",
@@ -108,6 +132,15 @@ UI = {
         "busy": "The chef is slammed, give me a minute. 🔥",
         "brain": "Chef's brain hiccup ({v}). Try again.",
         "burned": "Something burned in the kitchen. Looking into it.",
+        "your_id": "Your Telegram ID is: {v}",
+        "denied": "🔒 You need an access code to use the chef.\nSend: /activar YOUR-CODE",
+        "activated": "✅ Access granted! Welcome to the kitchen. Type /help.",
+        "code_bad": "❌ Invalid or already-used code.",
+        "code_new": "New code: {v}",
+        "allowed_list": "Users with access:\n{v}",
+        "codes_list": "Codes:\n{v}",
+        "user_allowed": "✅ User {v} added.",
+        "user_denied": "🚫 User {v} removed.",
     },
 }
 
@@ -207,6 +240,60 @@ def handle_message(chat_id: int, text: str) -> None:
     lang = db.get_lang(chat_id)
     text = text.strip()
 
+    # --- Always-open commands (work even without access) ---------------------
+    if text.startswith("/id"):
+        send_message(chat_id, t(lang, "your_id", v=chat_id))
+        return
+
+    if text.startswith("/activar") or text.startswith("/redeem"):
+        cmd = "/activar" if text.startswith("/activar") else "/redeem"
+        code = _arg(text, cmd).strip().upper()
+        if db.redeem_code(code, chat_id):
+            send_message(chat_id, t(lang, "activated"))
+        else:
+            send_message(chat_id, t(lang, "code_bad"))
+        return
+
+    # --- Owner-only management commands ---------------------------------------
+    if is_owner(chat_id):
+        if text.startswith("/gencode"):
+            code = new_code()
+            db.create_code(code, _arg(text, "/gencode"))
+            send_message(chat_id, t(lang, "code_new", v=code))
+            return
+        if text.startswith("/codes"):
+            rows = db.list_codes()
+            body = "\n".join(f"{c} {'· USADO por '+str(u) if u else '· libre'} {n}" for c, n, u in rows) or "—"
+            send_message(chat_id, t(lang, "codes_list", v=body))
+            return
+        if text.startswith("/allow"):
+            arg = _arg(text, "/allow").split(maxsplit=1)
+            if arg and arg[0].lstrip("-").isdigit():
+                target = int(arg[0])
+                db.allow_user(target, arg[1] if len(arg) > 1 else "")
+                send_message(chat_id, t(lang, "user_allowed", v=target))
+            return
+        if text.startswith("/deny"):
+            arg = _arg(text, "/deny").strip()
+            if arg.lstrip("-").isdigit():
+                db.deny_user(int(arg))
+                send_message(chat_id, t(lang, "user_denied", v=arg))
+            return
+        if text.startswith("/allowed"):
+            rows = db.list_allowed()
+            body = "\n".join(f"{cid} {note}" for cid, note in rows) or "—"
+            send_message(chat_id, t(lang, "allowed_list", v=body))
+            return
+
+    # --- THE GATE: everything below costs API money, so check access first ----
+    if not (is_owner(chat_id) or db.is_allowed(chat_id)):
+        if text.startswith("/start") or text.startswith("/help"):
+            send_message(chat_id, t(lang, "welcome") + "\n\n" + t(lang, "denied"))
+        else:
+            send_message(chat_id, t(lang, "denied"))
+        return
+
+    # --- From here on, the user is authorized --------------------------------
     if text.startswith("/start") or text.startswith("/help"):
         send_message(chat_id, t(lang, "welcome") + "\n\n" + HELP[lang])
 
