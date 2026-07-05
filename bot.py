@@ -1,12 +1,11 @@
 """
-Chef Bot v0.1 — Dissident Labs
-A Telegram bot that cooks like Nosfe: recipes fitted to your pantry,
-your tastes, and your goals. Memory lives in SQLite. Brain is Claude.
-
-Flow: Telegram (long polling) -> build context from DB -> Claude -> reply -> log.
+Chef Bot v0.2 — Dissident Labs
+Telegram bot that cooks like Nosfe: recipes fitted to pantry, tastes, goals,
+equipment, and skill. Bilingual (ES/EN). Palate memory in SQLite. Brain = Claude.
 """
 
 import os
+import re
 import time
 import traceback
 
@@ -14,43 +13,149 @@ import requests
 import anthropic
 
 import db
+import levels
 
 # ---------------------------------------------------------------------------
-# Config — everything secret comes from environment variables, never from code
+# Config — secrets come from the environment, never from code.
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
-
 MODEL = os.environ.get("MODEL", "claude-opus-4-8")
 
-# The cooking doctrine. This is the soul of the bot — and the first thing
-# you should edit yourself. Make it sound like YOU.
+# The cooking doctrine — the soul of the bot. Written in English for precision;
+# the chef still replies in the USER's language (see the LANGUAGE rule).
 SYSTEM_PROMPT = """\
-Eres el Chef de Dissident Labs: un cocinero real con década de cocina \
-profesional (incluida cocina de alto nivel en NYC), no un recetario genérico.
+You are the chef of Dissident Labs: a real cook with a decade in professional \
+kitchens (including high-end kitchens in NYC) and a gastronomy degree. You are \
+NOT a generic recipe site. You cook flavor-first: flavor bases, balancing \
+acid/fat/salt/heat, texture, and technique that actually matters.
 
-Reglas:
-- Cocinas con lo que hay en la despensa del usuario. Si falta algo clave, \
-propón el reemplazo más realista, no una lista de compras.
-- El sabor manda: bases de sabor, ácido para balancear, textura. Nada de \
-recetas planas de blog.
-- Respeta SIEMPRE las alergias y restricciones del perfil. Eso no se negocia.
-- Ajusta a las metas del perfil (macros, calorías) sin sacrificar gusto.
-- Aprende del historial de gustos del usuario y menciónalo cuando sea relevante.
-- Formato: nombre del plato, ingredientes con cantidades aproximadas, pasos \
-numerados y cortos, y UN tip de técnica que mejore el resultado.
-- Responde en el idioma del usuario. Directo y cálido, cero relleno.
+LANGUAGE: Reply in the SAME language the user writes in — Spanish or English. \
+Match their register. Warm but direct.
+
+FORMAT (this goes to Telegram as plain text):
+- NO markdown. Never use **asterisks**, __underscores__, or #headers — Telegram \
+shows them as literal characters. Use plain lines and a few emoji instead.
+- Shape it like:
+    Nombre del plato
+    🥘 Ingredientes: item (cantidad), ...
+    👣 Pasos: 1) ...  2) ...  3) ...
+    💡 Tip: una técnica que mejora el resultado
+- Be concise. Lead with the dish. No preamble, no "¡Qué buena elección!", no \
+filler. One short framing line max.
+
+RULES:
+- Cook with what's in the PANTRY. If a key item is missing, give the most \
+realistic substitution — not a shopping list.
+- ALLERGIES and dietary restrictions in the profile are absolute. Never break them.
+- Only propose techniques the user's EQUIPMENT and methods allow. No oven -> \
+don't roast. No blender -> no purées.
+- Calibrate to SKILL and RANK: lower level -> simpler steps, explain the \
+technique; higher level -> assume competence, go deeper. Occasionally teach ONE \
+technique slightly above their level to help them grow.
+- Fit the GOALS (macros, calories) without killing flavor.
+- Use the TASTE HISTORY: lean into what they liked, avoid what they disliked, \
+and mention it briefly when relevant.
+- Ground everything in real gastronomy: name the technique and WHY it works; use \
+regional/seasonal produce for their region; season in layers; mise en place.
+- Don't repeat recently served dishes.
 """
 
+# ---------------------------------------------------------------------------
+# Bilingual UI strings for command confirmations
+# ---------------------------------------------------------------------------
+UI = {
+    "es": {
+        "welcome": "🔪 Chef de Dissident Labs a la orden.",
+        "profile_saved": "Perfil guardado. Eso no se me olvida.",
+        "profile_show": "Tu perfil:\n{v}",
+        "equip_saved": "Equipo de cocina guardado: {v}",
+        "equip_show": "Tu equipo:\n{v}",
+        "skill_saved": "Nivel declarado: {v}",
+        "skill_ask": "Dime tu nivel: /skill principiante | intermedio | avanzado",
+        "pantry_saved": "Despensa actualizada: {v}",
+        "pantry_show": "Despensa: {v}",
+        "taste_saved": "Anotado en tu paladar. 📝 (+{xp} XP)",
+        "taste_ask": "Dime qué te gustó o no: /gusto me encantó el hogao",
+        "history": "Últimas recetas:\n{v}",
+        "history_empty": "Aún no te he cocinado nada.",
+        "lang_set": "Idioma de comandos: Español 🇪🇸",
+        "empty": "(vacío)",
+        "levelup": "\n\n🎉 ¡Subiste de rango! Ahora eres {v}",
+        "busy": "El chef está saturado, dame un minuto. 🔥",
+        "brain": "Problema con el cerebro del chef ({v}). Intenta de nuevo.",
+        "burned": "Algo se quemó en la cocina. Ya lo reviso.",
+    },
+    "en": {
+        "welcome": "🔪 Dissident Labs Chef at your service.",
+        "profile_saved": "Profile saved. I won't forget that.",
+        "profile_show": "Your profile:\n{v}",
+        "equip_saved": "Kitchen equipment saved: {v}",
+        "equip_show": "Your equipment:\n{v}",
+        "skill_saved": "Skill level set: {v}",
+        "skill_ask": "Tell me your level: /skill beginner | intermediate | advanced",
+        "pantry_saved": "Pantry updated: {v}",
+        "pantry_show": "Pantry: {v}",
+        "taste_saved": "Logged to your palate. 📝 (+{xp} XP)",
+        "taste_ask": "Tell me what you liked or not: /taste loved the garlic sauce",
+        "history": "Recent dishes:\n{v}",
+        "history_empty": "I haven't cooked for you yet.",
+        "lang_set": "Command language: English 🇬🇧",
+        "empty": "(empty)",
+        "levelup": "\n\n🎉 Rank up! You're now {v}",
+        "busy": "The chef is slammed, give me a minute. 🔥",
+        "brain": "Chef's brain hiccup ({v}). Try again.",
+        "burned": "Something burned in the kitchen. Looking into it.",
+    },
+}
+
+HELP = {
+    "es": (
+        "Comandos:\n"
+        "/perfil <texto> — metas, alergias, región, dieta\n"
+        "/equipo <texto> — herramientas y métodos disponibles (ej: estufa, sartén, sin horno)\n"
+        "/skill principiante|intermedio|avanzado — tu nivel de cocina\n"
+        "/despensa <items> — lo que tienes (separado por comas)\n"
+        "/gusto <texto> — registra una reacción\n"
+        "/historial — últimas recetas\n"
+        "/nivel — tu rango de cocina 🍳\n"
+        "/idioma es|en — idioma de comandos\n"
+        "Todo lo demás: pídeme de comer. Ej: \"tengo pollo y arroz, algo rápido\""
+    ),
+    "en": (
+        "Commands:\n"
+        "/perfil <text> — goals, allergies, region, diet\n"
+        "/equipo <text> — tools & methods you have (e.g. stove, pan, no oven)\n"
+        "/skill beginner|intermediate|advanced — your cooking level\n"
+        "/despensa <items> — what you have (comma-separated)\n"
+        "/gusto <text> — log a taste reaction\n"
+        "/historial — recent dishes\n"
+        "/nivel — your kitchen rank 🍳\n"
+        "/idioma es|en — command language\n"
+        "Anything else: ask for food. e.g. \"I have chicken and rice, something quick\""
+    ),
+}
+
+
+def t(lang: str, key: str, **kw) -> str:
+    return UI.get(lang, UI["es"])[key].format(**kw)
+
 
 # ---------------------------------------------------------------------------
-# Telegram helpers
+# Telegram + output helpers
 # ---------------------------------------------------------------------------
+def clean(text: str) -> str:
+    """Belt-and-suspenders: strip stray markdown the model might still emit."""
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)  # drop leading # headers
+    return text.strip()
+
+
 def send_message(chat_id: int, text: str) -> None:
-    """Telegram caps messages at 4096 chars, so long replies get split."""
-    for i in range(0, len(text), 4000):
+    text = clean(text)
+    for i in range(0, len(text), 4000):  # Telegram caps at 4096 chars
         requests.post(
             f"{TG_API}/sendMessage",
             json={"chat_id": chat_id, "text": text[i : i + 4000]},
@@ -62,20 +167,21 @@ def send_message(chat_id: int, text: str) -> None:
 # The brain call
 # ---------------------------------------------------------------------------
 def ask_chef(chat_id: int, user_message: str) -> str:
-    """Build the user's context from the DB and ask Claude for a reply."""
-    profile = db.get_profile(chat_id)
+    u = db.get_user(chat_id)
     pantry = db.get_pantry(chat_id)
     tastes = db.recent_tastes(chat_id, limit=15)
     recipes = db.recent_recipe_titles(chat_id, limit=5)
+    xp = db.get_xp(chat_id)
 
     context = (
-        f"PERFIL DEL USUARIO:\n{profile or '(sin perfil aún)'}\n\n"
-        f"DESPENSA ACTUAL:\n{', '.join(pantry) if pantry else '(vacía)'}\n\n"
-        f"HISTORIAL DE GUSTOS (reacciones recientes):\n"
-        f"{chr(10).join(tastes) if tastes else '(sin datos aún)'}\n\n"
-        f"RECETAS RECIENTES (no repetir):\n"
-        f"{chr(10).join(recipes) if recipes else '(ninguna)'}\n\n"
-        f"MENSAJE DEL USUARIO:\n{user_message}"
+        f"PROFILE (goals/allergies/region/diet):\n{(u['profile'] if u else None) or '(none yet)'}\n\n"
+        f"EQUIPMENT & METHODS:\n{(u['equipment'] if u else None) or '(unknown)'}\n\n"
+        f"SELF-REPORTED SKILL: {(u['skill'] if u else None) or '(unspecified)'}\n"
+        f"KITCHEN RANK: {levels.title_for(xp)} ({xp} XP)\n\n"
+        f"PANTRY:\n{', '.join(pantry) if pantry else '(empty)'}\n\n"
+        f"TASTE HISTORY (recent reactions):\n{chr(10).join(tastes) if tastes else '(no data yet)'}\n\n"
+        f"RECENTLY SERVED (do not repeat):\n{chr(10).join(recipes) if recipes else '(none)'}\n\n"
+        f"USER MESSAGE:\n{user_message}"
     )
 
     response = client.messages.create(
@@ -85,75 +191,104 @@ def ask_chef(chat_id: int, user_message: str) -> str:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
     )
-
-    text_parts = [block.text for block in response.content if block.type == "text"]
-    return "\n".join(text_parts).strip() or "(el chef se quedó sin palabras)"
+    parts = [b.text for b in response.content if b.type == "text"]
+    return "\n".join(parts).strip() or "(el chef se quedó sin palabras)"
 
 
 # ---------------------------------------------------------------------------
 # Command handling
 # ---------------------------------------------------------------------------
-HELP = """\
-Comandos del Chef:
-/perfil <texto> — guarda tus metas, alergias, región (reemplaza el anterior)
-/despensa — muestra tu despensa
-/despensa <items separados por coma> — reemplaza tu despensa
-/gusto <texto> — registra una reacción ("me encantó el curry", "menos picante")
-/historial — últimas recetas
-Todo lo demás: pídeme de comer. Ej: "tengo pollo, arroz y brócoli, algo rápido"
-"""
+def _arg(text: str, cmd: str) -> str:
+    return text[len(cmd):].strip()
 
 
 def handle_message(chat_id: int, text: str) -> None:
     db.ensure_user(chat_id)
+    lang = db.get_lang(chat_id)
     text = text.strip()
 
     if text.startswith("/start") or text.startswith("/help"):
-        send_message(chat_id, "🔪 Chef de Dissident Labs a la orden.\n\n" + HELP)
+        send_message(chat_id, t(lang, "welcome") + "\n\n" + HELP[lang])
+
+    elif text.startswith("/idioma"):
+        choice = _arg(text, "/idioma").lower()
+        new = "en" if choice.startswith("en") else "es"
+        db.set_lang(chat_id, new)
+        send_message(chat_id, t(new, "lang_set"))
 
     elif text.startswith("/perfil"):
-        body = text[len("/perfil"):].strip()
+        body = _arg(text, "/perfil")
         if body:
             db.set_profile(chat_id, body)
-            send_message(chat_id, "Perfil guardado. Eso no se me olvida.")
+            send_message(chat_id, t(lang, "profile_saved"))
         else:
-            send_message(chat_id, f"Tu perfil:\n{db.get_profile(chat_id) or '(vacío)'}")
+            u = db.get_user(chat_id)
+            send_message(chat_id, t(lang, "profile_show", v=(u["profile"] if u else None) or t(lang, "empty")))
+
+    elif text.startswith("/equipo"):
+        body = _arg(text, "/equipo")
+        if body:
+            db.set_equipment(chat_id, body)
+            send_message(chat_id, t(lang, "equip_saved", v=body))
+        else:
+            u = db.get_user(chat_id)
+            send_message(chat_id, t(lang, "equip_show", v=(u["equipment"] if u else None) or t(lang, "empty")))
+
+    elif text.startswith("/skill"):
+        body = _arg(text, "/skill")
+        if body:
+            db.set_skill(chat_id, body)
+            send_message(chat_id, t(lang, "skill_saved", v=body))
+        else:
+            send_message(chat_id, t(lang, "skill_ask"))
 
     elif text.startswith("/despensa"):
-        body = text[len("/despensa"):].strip()
+        body = _arg(text, "/despensa")
         if body:
             items = [x.strip() for x in body.split(",") if x.strip()]
             db.set_pantry(chat_id, items)
-            send_message(chat_id, f"Despensa actualizada: {', '.join(items)}")
+            send_message(chat_id, t(lang, "pantry_saved", v=", ".join(items)))
         else:
             pantry = db.get_pantry(chat_id)
-            send_message(chat_id, f"Despensa: {', '.join(pantry) if pantry else '(vacía)'}")
+            send_message(chat_id, t(lang, "pantry_show", v=", ".join(pantry) if pantry else t(lang, "empty")))
 
-    elif text.startswith("/gusto"):
-        body = text[len("/gusto"):].strip()
+    elif text.startswith("/gusto") or text.startswith("/taste"):
+        cmd = "/gusto" if text.startswith("/gusto") else "/taste"
+        body = _arg(text, cmd)
         if body:
             db.log_taste(chat_id, body)
-            send_message(chat_id, "Anotado en tu paladar. 📝")
+            old, new = db.add_xp(chat_id, levels.XP_PER_TASTE)
+            msg = t(lang, "taste_saved", xp=levels.XP_PER_TASTE)
+            up = levels.leveled_up(old, new)
+            if up:
+                msg += t(lang, "levelup", v=up)
+            send_message(chat_id, msg)
         else:
-            send_message(chat_id, "Dime qué te gustó o no: /gusto me encantó el hogao")
+            send_message(chat_id, t(lang, "taste_ask"))
 
-    elif text.startswith("/historial"):
+    elif text.startswith("/historial") or text.startswith("/history"):
         titles = db.recent_recipe_titles(chat_id, limit=10)
-        send_message(chat_id, "Últimas recetas:\n" + "\n".join(titles) if titles else "Aún no te he cocinado nada.")
+        send_message(chat_id, t(lang, "history", v="\n".join(titles)) if titles else t(lang, "history_empty"))
+
+    elif text.startswith("/nivel") or text.startswith("/level"):
+        send_message(chat_id, levels.status(db.get_xp(chat_id)))
 
     else:
         reply = ask_chef(chat_id, text)
         db.log_recipe(chat_id, reply)
+        old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
+        up = levels.leveled_up(old, new)
+        if up:
+            reply += t(lang, "levelup", v=up)
         send_message(chat_id, reply)
 
 
 # ---------------------------------------------------------------------------
-# Main loop — long polling: we ask Telegram "anything new?" forever.
-# No webhooks, no domain, no inbound ports. The bot only ever calls out.
+# Main loop — long polling. Bot only ever calls out; no inbound ports.
 # ---------------------------------------------------------------------------
 def main() -> None:
     db.init()
-    print("Chef bot corriendo. Ctrl+C para apagar.")
+    print("Chef bot v0.2 corriendo. Ctrl+C para apagar.")
     offset = None
     while True:
         try:
@@ -168,17 +303,18 @@ def main() -> None:
                 chat_id = (msg.get("chat") or {}).get("id")
                 text = msg.get("text")
                 if chat_id and text:
+                    lang = db.get_lang(chat_id)
                     try:
                         handle_message(chat_id, text)
                     except anthropic.RateLimitError:
-                        send_message(chat_id, "El chef está saturado, dame un minuto. 🔥")
+                        send_message(chat_id, t(lang, "busy"))
                     except anthropic.APIStatusError as e:
-                        send_message(chat_id, f"Problema con el cerebro del chef ({e.status_code}). Intenta de nuevo.")
+                        send_message(chat_id, t(lang, "brain", v=e.status_code))
                     except Exception:
                         traceback.print_exc()
-                        send_message(chat_id, "Algo se quemó en la cocina. Ya lo reviso.")
+                        send_message(chat_id, t(lang, "burned"))
         except requests.RequestException:
-            time.sleep(5)  # network hiccup — breathe and retry
+            time.sleep(5)
 
 
 if __name__ == "__main__":

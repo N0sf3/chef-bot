@@ -1,10 +1,14 @@
 -- schema.sql — the shape of the bot's memory.
--- Four tables. Each row keyed by chat_id (the Telegram user).
+-- Fresh installs get all columns here; existing DBs get migrated in db.py.
 
--- One row per user: their profile text (goals, allergies, region).
+-- One row per user.
 CREATE TABLE IF NOT EXISTS users (
-    chat_id  INTEGER PRIMARY KEY,
-    profile  TEXT
+    chat_id    INTEGER PRIMARY KEY,
+    profile    TEXT,              -- goals, allergies, region, diet
+    equipment  TEXT,              -- tools + available cooking methods
+    skill      TEXT,              -- self-reported: principiante/intermedio/avanzado
+    lang       TEXT DEFAULT 'es', -- UI language for command replies
+    xp         INTEGER DEFAULT 0  -- kitchen XP (the RPG layer)
 );
 
 -- What's in the kitchen right now. Wiped and refilled on each /despensa update.
@@ -14,8 +18,7 @@ CREATE TABLE IF NOT EXISTS pantry (
     item     TEXT NOT NULL
 );
 
--- The crown jewel: every taste reaction, append-only, timestamped.
--- This is what compounds into a palate over time.
+-- The crown jewel: every taste reaction, append-only. This is what compounds.
 CREATE TABLE IF NOT EXISTS taste_events (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id  INTEGER NOT NULL,

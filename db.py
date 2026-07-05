@@ -1,61 +1,101 @@
 """
-db.py — the bot's memory.
-
-Everything the chef remembers about a user lives in one SQLite file on disk.
-SQLite = a whole database in a single file, no server to run. Perfect for a
-small bot. Each Telegram user is identified by their chat_id (a number).
-
-You can open the file anytime with:  sqlite3 chef.db  (then .tables, .schema)
+db.py — the bot's memory. One SQLite file on disk, no server.
+Open it anytime with:  sqlite3 chef.db  (then .tables, .schema)
 """
 
 import os
 import sqlite3
 
-# The database file. On the VPS this sits on a persistent volume so it
-# survives redeploys (same idea as your n8n volume).
 DB_PATH = os.environ.get("DB_PATH", "chef.db")
 
 
 def _conn() -> sqlite3.Connection:
-    """Open a connection. row_factory lets us read columns by name."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init() -> None:
-    """Create the tables if they don't exist yet. Safe to run every startup."""
+    """Create tables if missing, then migrate old DBs to the new columns."""
     with open(os.path.join(os.path.dirname(__file__), "schema.sql")) as f:
         schema = f.read()
     with _conn() as conn:
         conn.executescript(schema)
+        _migrate(conn)
+
+
+def _migrate(conn) -> None:
+    """Add any columns that older databases don't have yet. Safe to re-run."""
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    wanted = {
+        "equipment": "TEXT",
+        "skill": "TEXT",
+        "lang": "TEXT DEFAULT 'es'",
+        "xp": "INTEGER DEFAULT 0",
+    }
+    for name, decl in wanted.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
 
 
 # ---------------------------------------------------------------------------
 # users
 # ---------------------------------------------------------------------------
 def ensure_user(chat_id: int) -> None:
-    """First time we see a chat_id, create its row. INSERT OR IGNORE = no dupes."""
     with _conn() as conn:
         conn.execute("INSERT OR IGNORE INTO users (chat_id) VALUES (?)", (chat_id,))
 
 
-# ---------------------------------------------------------------------------
-# profile — goals, allergies, region. One block of text per user for now.
-# ---------------------------------------------------------------------------
+def get_user(chat_id: int) -> sqlite3.Row | None:
+    with _conn() as conn:
+        return conn.execute("SELECT * FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+
+
+def _set_field(chat_id: int, field: str, value) -> None:
+    with _conn() as conn:
+        conn.execute(f"UPDATE users SET {field} = ? WHERE chat_id = ?", (value, chat_id))
+
+
 def set_profile(chat_id: int, text: str) -> None:
-    with _conn() as conn:
-        conn.execute("UPDATE users SET profile = ? WHERE chat_id = ?", (text, chat_id))
+    _set_field(chat_id, "profile", text)
 
 
-def get_profile(chat_id: int) -> str | None:
-    with _conn() as conn:
-        row = conn.execute("SELECT profile FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
-        return row["profile"] if row else None
+def set_equipment(chat_id: int, text: str) -> None:
+    _set_field(chat_id, "equipment", text)
+
+
+def set_skill(chat_id: int, text: str) -> None:
+    _set_field(chat_id, "skill", text)
+
+
+def set_lang(chat_id: int, lang: str) -> None:
+    _set_field(chat_id, "lang", lang)
+
+
+def get_lang(chat_id: int) -> str:
+    row = get_user(chat_id)
+    return (row["lang"] if row and row["lang"] else "es")
 
 
 # ---------------------------------------------------------------------------
-# pantry — what's in the kitchen right now. Replaced wholesale on each update.
+# xp — returns (old_xp, new_xp) so the caller can detect a level-up
+# ---------------------------------------------------------------------------
+def add_xp(chat_id: int, amount: int) -> tuple[int, int]:
+    with _conn() as conn:
+        row = conn.execute("SELECT xp FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+        old = (row["xp"] if row and row["xp"] is not None else 0)
+        new = old + amount
+        conn.execute("UPDATE users SET xp = ? WHERE chat_id = ?", (new, chat_id))
+        return old, new
+
+
+def get_xp(chat_id: int) -> int:
+    row = get_user(chat_id)
+    return (row["xp"] if row and row["xp"] is not None else 0)
+
+
+# ---------------------------------------------------------------------------
+# pantry
 # ---------------------------------------------------------------------------
 def set_pantry(chat_id: int, items: list[str]) -> None:
     with _conn() as conn:
@@ -73,7 +113,7 @@ def get_pantry(chat_id: int) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# taste_events — the gold. Append-only log of every reaction. Never deleted.
+# taste_events
 # ---------------------------------------------------------------------------
 def log_taste(chat_id: int, note: str) -> None:
     with _conn() as conn:
@@ -90,10 +130,9 @@ def recent_tastes(chat_id: int, limit: int = 15) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# recipes_served — so the chef doesn't repeat itself and can reference past dishes
+# recipes_served
 # ---------------------------------------------------------------------------
 def log_recipe(chat_id: int, full_text: str) -> None:
-    # store just the first line as the "title" for cheap lookups
     title = full_text.strip().splitlines()[0][:200] if full_text.strip() else "(sin título)"
     with _conn() as conn:
         conn.execute(
