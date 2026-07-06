@@ -47,7 +47,7 @@ def _bar(into: int, span: int, width: int = 10) -> str:
     return "▰" * filled + "▱" * (width - filled)
 
 
-def status(xp: int) -> str:
+def status(xp: int, lang: str = "es") -> str:
     """The full RPG status card shown on /nivel."""
     (thr, title, emoji), nxt = rank_for(xp)
     if nxt:
@@ -56,7 +56,8 @@ def status(xp: int) -> str:
             f"{emoji} {title} · {xp} XP\n"
             f"{_bar(into, span)}  {into}/{span} → {nxt[2]} {nxt[1]}"
         )
-    return f"{emoji} {title} (nivel máximo) · {xp} XP 🏆"
+    max_label = {"es": "(nivel máximo)", "en": "(max level)"}.get(lang, "(nivel máximo)")
+    return f"{emoji} {title} {max_label} · {xp} XP 🏆"
 
 
 def leveled_up(old_xp: int, new_xp: int):

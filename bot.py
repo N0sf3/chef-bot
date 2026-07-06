@@ -63,6 +63,12 @@ shows them literally. Use plain lines and a few emoji.
 RULES:
 - Cook with what's in the PANTRY. Missing a key item -> give the most realistic \
 substitution, not a shopping list.
+- SPECIFIC DISH REQUESTS: if the user names a dish they want to make (e.g. "quiero \
+hacer lasaña", "I want to make ramen"), check their pantry. If they have enough \
+(with reasonable substitutions), give it adapted to what they have. If key things \
+are missing, briefly say what's missing and offer BOTH options: (a) an adapted \
+version using only what they have now, or (b) the classic version with a short \
+shopping list. Let them choose — never just refuse.
 - ALLERGIES and dietary restrictions in the profile are absolute. Never break them.
 - Only propose techniques the EQUIPMENT and methods allow. No oven -> no roasting.
 - PREFERENCES ARE AN ANCHOR, NOT A CAGE: lean on what they like, but regularly \
@@ -117,6 +123,7 @@ ALIASES = {
     "historial": "history", "history": "history",
     "nivel": "rank", "level": "rank", "rank": "rank",
     "tecnicas": "techniques", "techniques": "techniques", "arbol": "techniques", "tree": "techniques",
+    "reset": "reset", "reiniciar": "reset", "borrar": "reset",
     # owner-only
     "gencode": "gencode", "codes": "codes", "codigos": "codes",
     "allow": "allow", "deny": "deny", "allowed": "allowed",
@@ -163,6 +170,8 @@ UI = {
         "tree_mastered": "✅ Practicadas:",
         "tree_available": "⬜ Disponibles (según tus herramientas):",
         "equip_analyzed": "🌳 Analicé tus herramientas — árbol de técnicas actualizado. Mira /tecnicas",
+        "reset_usage": "¿Qué quieres reiniciar?\n/reset tecnicas — borra tu árbol\n/reset gustos — borra tu paladar\n/reset despensa — vacía la despensa\n/reset todo — todo lo anterior",
+        "reset_done": "🧹 Listo, reiniciado: {v}",
         # reply-keyboard button labels
         "btn_cook": "🍳 ¿Qué cocino?",
         "btn_tree": "🌳 Técnicas",
@@ -213,6 +222,8 @@ UI = {
         "tree_mastered": "✅ Practiced:",
         "tree_available": "⬜ Available (from your tools):",
         "equip_analyzed": "🌳 Analyzed your tools — technique tree updated. See /techniques",
+        "reset_usage": "What do you want to reset?\n/reset techniques — clears your tree\n/reset tastes — clears your palate\n/reset pantry — empties the pantry\n/reset all — everything above",
+        "reset_done": "🧹 Done, reset: {v}",
         "btn_cook": "🍳 What can I cook?",
         "btn_tree": "🌳 Techniques",
         "btn_pantry": "📋 Pantry",
@@ -571,7 +582,7 @@ def handle_message(chat_id: int, text: str) -> None:
         send_message(chat_id, t(lang, "history", v="\n".join(titles)) if titles else t(lang, "history_empty"))
 
     elif action == "rank":
-        send_message(chat_id, levels.status(db.get_xp(chat_id)), reply_markup=reply_keyboard(lang))
+        send_message(chat_id, levels.status(db.get_xp(chat_id), lang), reply_markup=reply_keyboard(lang))
 
     elif action == "techniques":
         techs = db.get_techniques(chat_id)
@@ -579,6 +590,25 @@ def handle_message(chat_id: int, text: str) -> None:
             send_message(chat_id, t(lang, "tree", v=render_tree(techs, lang)))
         else:
             send_message(chat_id, t(lang, "tree_empty"))
+
+    elif action == "reset":
+        target = arg.strip().lower()
+        if target in ("tecnicas", "técnicas", "techniques", "tree", "arbol", "árbol"):
+            db.clear_techniques(chat_id)
+            send_message(chat_id, t(lang, "reset_done", v="🌳"))
+        elif target in ("gustos", "gusto", "tastes", "taste", "paladar"):
+            db.clear_tastes(chat_id)
+            send_message(chat_id, t(lang, "reset_done", v="👅"))
+        elif target in ("despensa", "pantry"):
+            db.clear_pantry(chat_id)
+            send_message(chat_id, t(lang, "reset_done", v="📋"))
+        elif target in ("todo", "all", "everything"):
+            db.clear_techniques(chat_id)
+            db.clear_tastes(chat_id)
+            db.clear_pantry(chat_id)
+            send_message(chat_id, t(lang, "reset_done", v="🌳👅📋"))
+        else:
+            send_message(chat_id, t(lang, "reset_usage"))
 
     elif action == "cook_pantry":
         if db.get_pantry(chat_id):

@@ -255,3 +255,21 @@ def get_techniques(chat_id: int) -> list[tuple[str, int]]:
             (chat_id,),
         ).fetchall()
         return [(r["name"], r["practiced"]) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# resets — let a user clear and redo the append-only data
+# ---------------------------------------------------------------------------
+def clear_techniques(chat_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM user_techniques WHERE chat_id = ?", (chat_id,))
+
+
+def clear_tastes(chat_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM taste_events WHERE chat_id = ?", (chat_id,))
+
+
+def clear_pantry(chat_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM pantry WHERE chat_id = ?", (chat_id,))
