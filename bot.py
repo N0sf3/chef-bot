@@ -123,6 +123,7 @@ ALIASES = {
     "historial": "history", "history": "history",
     "nivel": "rank", "level": "rank", "rank": "rank",
     "tecnicas": "techniques", "techniques": "techniques", "arbol": "techniques", "tree": "techniques",
+    "explica": "explain", "explicar": "explain", "explain": "explain",
     "reset": "reset", "reiniciar": "reset", "borrar": "reset",
     # owner-only
     "gencode": "gencode", "codes": "codes", "codigos": "codes",
@@ -172,6 +173,10 @@ UI = {
         "equip_analyzed": "🌳 Analicé tus herramientas — árbol de técnicas actualizado. Mira /tecnicas",
         "reset_usage": "¿Qué quieres reiniciar?\n/reset tecnicas — borra tu árbol\n/reset gustos — borra tu paladar\n/reset despensa — vacía la despensa\n/reset todo — todo lo anterior",
         "reset_done": "🧹 Listo, reiniciado: {v}",
+        "explain_ask": "¿Qué técnica quieres que te explique? Ej: /explica saltear",
+        "no_techs": "Aún no tienes técnicas. Configura tu equipo con /equipo.",
+        "btn_explain": "📖 ¿Qué significan?",
+        "btn_reset_tree": "🧹 Reiniciar árbol",
         # reply-keyboard button labels
         "btn_cook": "🍳 ¿Qué cocino?",
         "btn_tree": "🌳 Técnicas",
@@ -224,6 +229,10 @@ UI = {
         "equip_analyzed": "🌳 Analyzed your tools — technique tree updated. See /techniques",
         "reset_usage": "What do you want to reset?\n/reset techniques — clears your tree\n/reset tastes — clears your palate\n/reset pantry — empties the pantry\n/reset all — everything above",
         "reset_done": "🧹 Done, reset: {v}",
+        "explain_ask": "Which technique should I explain? E.g. /explain sauté",
+        "no_techs": "No techniques yet. Set your equipment with /equipment.",
+        "btn_explain": "📖 What do they mean?",
+        "btn_reset_tree": "🧹 Reset tree",
         "btn_cook": "🍳 What can I cook?",
         "btn_tree": "🌳 Techniques",
         "btn_pantry": "📋 Pantry",
@@ -242,12 +251,14 @@ HELP = {
         "Comandos (funcionan en español o inglés):\n"
         "/perfil <texto> — metas, alergias, región, dieta\n"
         "/equipo <texto> — herramientas y métodos (ej: estufa, sartén, sin horno)\n"
-        "/skill principiante|intermedio|avanzado — tu nivel\n"
+        "/habilidad principiante|intermedio|avanzado — tu nivel\n"
         "/despensa <items> — lo que tienes (comas)\n"
         "/gusto <texto> — registra una reacción\n"
         "/historial — últimas recetas\n"
         "/nivel — tu rango 🍳\n"
         "/tecnicas — tu árbol de técnicas 🌳\n"
+        "/explica <técnica> — qué significa una técnica 📖\n"
+        "/reset — borra árbol, gustos o despensa 🧹\n"
         "/idioma es|en — idioma\n"
         "O usa los botones de abajo 👇, o pídeme de comer."
     ),
@@ -261,6 +272,8 @@ HELP = {
         "/history — recent dishes\n"
         "/rank — your rank 🍳\n"
         "/techniques — your technique tree 🌳\n"
+        "/explain <technique> — what a technique means 📖\n"
+        "/reset — clear tree, tastes or pantry 🧹\n"
         "/language es|en — language\n"
         "Or use the buttons below 👇, or just ask for food."
     ),
@@ -408,6 +421,31 @@ def render_tree(techs: list[tuple[str, int]], lang: str) -> str:
         lines.append(t(lang, "tree_available"))
         lines += [f"  • {n}" for n in available]
     return "\n".join(lines)
+
+
+def tree_keyboard(lang: str) -> dict:
+    """Inline buttons under the technique tree: explain + reset."""
+    return {
+        "inline_keyboard": [[
+            {"text": t(lang, "btn_explain"), "callback_data": "explain"},
+            {"text": t(lang, "btn_reset_tree"), "callback_data": "reset_tree"},
+        ]]
+    }
+
+
+def explain_techniques(subject: str, lang: str) -> str:
+    """Short, clear explanations of one or more techniques, in the user's language."""
+    resp = client.messages.create(
+        model=MODEL, max_tokens=800,
+        output_config={"effort": "low"},
+        system=(
+            "You are a cooking teacher. Explain the given cooking technique(s) "
+            "briefly and clearly — one short line each, format 'technique: what it is' "
+            f"— in {LANG_NAME.get(lang, 'Spanish')}. Plain text, no markdown, no preamble."
+        ),
+        messages=[{"role": "user", "content": subject}],
+    )
+    return "".join(b.text for b in resp.content if b.type == "text").strip() or "…"
 
 
 def cook_and_send(chat_id: int, lang: str, request: str) -> None:
@@ -588,9 +626,21 @@ def handle_message(chat_id: int, text: str) -> None:
     elif action == "techniques":
         techs = db.get_techniques(chat_id)
         if techs:
-            send_message(chat_id, t(lang, "tree", v=render_tree(techs, lang)))
+            send_message(chat_id, t(lang, "tree", v=render_tree(techs, lang)),
+                         reply_markup=tree_keyboard(lang))
         else:
             send_message(chat_id, t(lang, "tree_empty"))
+
+    elif action == "explain":
+        subject = arg.strip()
+        if not subject:  # no technique named -> explain their whole tree
+            techs = db.get_techniques(chat_id)
+            if not techs:
+                send_message(chat_id, t(lang, "explain_ask"))
+                return
+            subject = ", ".join(n for n, _ in techs)
+        send_typing(chat_id)
+        send_message(chat_id, explain_techniques(subject, lang))
 
     elif action == "reset":
         target = arg.strip().lower()
@@ -629,6 +679,21 @@ def handle_callback(chat_id: int, data: str, callback_id: str) -> None:
     lang = db.get_lang(chat_id)
     if not (is_owner(chat_id) or db.is_allowed(chat_id)):
         answer_callback(callback_id, t(lang, "denied"))
+        return
+
+    if data == "explain":  # 📖 button under the tree
+        answer_callback(callback_id)
+        techs = db.get_techniques(chat_id)
+        if not techs:
+            send_message(chat_id, t(lang, "no_techs"))
+            return
+        send_typing(chat_id)
+        send_message(chat_id, explain_techniques(", ".join(n for n, _ in techs), lang))
+        return
+
+    if data == "reset_tree":  # 🧹 button under the tree
+        db.clear_techniques(chat_id)
+        answer_callback(callback_id, t(lang, "reset_done", v="🌳"))
         return
 
     if data == "rate:again":
