@@ -278,6 +278,18 @@ def answer_callback(callback_id: str, text: str = "") -> None:
     )
 
 
+def send_typing(chat_id: int) -> None:
+    """Shows 'Chef is typing...' so the wait feels intentional, not broken."""
+    try:
+        requests.post(
+            f"{TG_API}/sendChatAction",
+            json={"chat_id": chat_id, "action": "typing"},
+            timeout=15,
+        )
+    except requests.RequestException:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # The brain call
 # ---------------------------------------------------------------------------
@@ -297,8 +309,11 @@ def ask_chef(chat_id: int, user_message: str) -> str:
         f"RECENTLY SERVED (do not repeat):\n{chr(10).join(recipes) if recipes else '(none)'}\n\n"
         f"USER MESSAGE:\n{user_message}"
     )
+    # No extended thinking + capped output + medium effort = much faster.
+    # Recipe generation doesn't need deep reasoning; speed matters more here.
     response = client.messages.create(
-        model=MODEL, max_tokens=4000, thinking={"type": "adaptive"},
+        model=MODEL, max_tokens=1500,
+        output_config={"effort": "medium"},
         system=SYSTEM_PROMPT, messages=[{"role": "user", "content": context}],
     )
     parts = [b.text for b in response.content if b.type == "text"]
@@ -307,6 +322,7 @@ def ask_chef(chat_id: int, user_message: str) -> str:
 
 def cook_and_send(chat_id: int, lang: str, request: str) -> None:
     """Ask the chef, log the recipe, award XP, send with rating buttons."""
+    send_typing(chat_id)  # 'Chef is typing...' while the model works
     reply = ask_chef(chat_id, request)
     db.log_recipe(chat_id, reply)
     old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
@@ -462,7 +478,6 @@ def handle_message(chat_id: int, text: str) -> None:
 
     elif action == "cook_pantry":
         if db.get_pantry(chat_id):
-            send_message(chat_id, t(lang, "cooking"))
             cook_and_send(chat_id, lang, "Cook something from my pantry.")
         else:
             send_message(chat_id, t(lang, "pantry_empty_cook"))
