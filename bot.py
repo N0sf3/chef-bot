@@ -25,6 +25,7 @@ TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 client = anthropic.Anthropic()
 MODEL = os.environ.get("MODEL", "claude-opus-4-8")
 OWNER_ID = os.environ.get("OWNER_ID", "").strip()
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "25"))  # recipes/user/day (owner exempt)
 
 
 def is_owner(chat_id: int) -> bool:
@@ -136,7 +137,7 @@ UI = {
         "user_allowed": "✅ Usuario {v} agregado.",
         "user_denied": "🚫 Usuario {v} removido.",
         "rate_thanks": "¡Anotado! 📝 (+{xp} XP)",
-        "cooking": "Cocinando... 🔥",
+        "limit": "🍽️ Llegaste al límite de recetas de hoy. Vuelve mañana con hambre.",
         # reply-keyboard button labels
         "btn_cook": "🍳 ¿Qué cocino?",
         "btn_pantry": "📋 Despensa",
@@ -179,7 +180,7 @@ UI = {
         "user_allowed": "✅ User {v} added.",
         "user_denied": "🚫 User {v} removed.",
         "rate_thanks": "Logged! 📝 (+{xp} XP)",
-        "cooking": "Cooking... 🔥",
+        "limit": "🍽️ You hit today's recipe limit. Come back hungry tomorrow.",
         "btn_cook": "🍳 What can I cook?",
         "btn_pantry": "📋 Pantry",
         "btn_rank": "📊 Level",
@@ -322,6 +323,10 @@ def ask_chef(chat_id: int, user_message: str) -> str:
 
 def cook_and_send(chat_id: int, lang: str, request: str) -> None:
     """Ask the chef, log the recipe, award XP, send with rating buttons."""
+    # Per-user daily cost cap (owner exempt) — protects your API bill.
+    if not is_owner(chat_id) and db.recipes_today(chat_id) >= DAILY_LIMIT:
+        send_message(chat_id, t(lang, "limit"))
+        return
     send_typing(chat_id)  # 'Chef is typing...' while the model works
     reply = ask_chef(chat_id, request)
     db.log_recipe(chat_id, reply)
@@ -585,7 +590,12 @@ def main() -> None:
                         traceback.print_exc()
                         send_message(chat_id, t(lang, "burned"))
         except requests.RequestException:
-            time.sleep(5)
+            time.sleep(5)  # network blip — breathe and retry
+        except Exception:
+            # Any other error (e.g. a malformed Telegram response) must NOT
+            # kill the bot. Log it and keep the loop alive.
+            traceback.print_exc()
+            time.sleep(2)
 
 
 if __name__ == "__main__":

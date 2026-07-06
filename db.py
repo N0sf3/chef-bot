@@ -150,6 +150,17 @@ def recent_recipe_titles(chat_id: int, limit: int = 5) -> list[str]:
         return [r["title"] for r in rows]
 
 
+def recipes_today(chat_id: int) -> int:
+    """How many recipes this user got today (UTC) — powers the per-user cost cap."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM recipes_served "
+            "WHERE chat_id = ? AND date(created) = date('now')",
+            (chat_id,),
+        ).fetchone()
+        return row["n"] if row else 0
+
+
 # ---------------------------------------------------------------------------
 # access control — allowlist + activation codes
 # ---------------------------------------------------------------------------
