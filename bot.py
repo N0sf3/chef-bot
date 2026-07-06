@@ -1,7 +1,8 @@
 """
-Chef Bot v0.2 — Dissident Labs
-Telegram bot that cooks like Nosfe: recipes fitted to pantry, tastes, goals,
-equipment, and skill. Bilingual (ES/EN). Palate memory in SQLite. Brain = Claude.
+Chef Bot v0.4 — Dissident Labs
+Telegram bot that cooks like Nosfe. Bilingual (ES/EN) with command aliases,
+tap-buttons (reply keyboard), and one-tap taste rating (inline buttons).
+Palate memory in SQLite. Brain = Claude.
 """
 
 import os
@@ -17,16 +18,12 @@ import db
 import levels
 
 # ---------------------------------------------------------------------------
-# Config — secrets come from the environment, never from code.
+# Config
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+client = anthropic.Anthropic()
 MODEL = os.environ.get("MODEL", "claude-opus-4-8")
-
-# Your own Telegram numeric ID. The owner can manage the allowlist and is always
-# served. Set this in Coolify after you learn your ID via the /id command.
 OWNER_ID = os.environ.get("OWNER_ID", "").strip()
 
 
@@ -35,139 +32,189 @@ def is_owner(chat_id: int) -> bool:
 
 
 def new_code() -> str:
-    """A short, readable activation code like CHEF-7K3P."""
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no confusable 0/O/1/I
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "CHEF-" + "".join(secrets.choice(alphabet) for _ in range(4))
 
-# The cooking doctrine — the soul of the bot. Written in English for precision;
-# the chef still replies in the USER's language (see the LANGUAGE rule).
+
+# ---------------------------------------------------------------------------
+# Doctrine — the chef's soul. Replies in the user's language.
+# ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """\
 You are the chef of Dissident Labs: a real cook with a decade in professional \
 kitchens (including high-end kitchens in NYC) and a gastronomy degree. You are \
 NOT a generic recipe site. You cook flavor-first: flavor bases, balancing \
-acid/fat/salt/heat, texture, and technique that actually matters.
+acid/fat/salt/heat, texture, and technique that actually matters. You know the \
+world's cuisines broadly — draw on any regional style that fits, not a fixed list.
 
 LANGUAGE: Reply in the SAME language the user writes in — Spanish or English. \
-Match their register. Warm but direct.
+Warm but direct.
 
-FORMAT (this goes to Telegram as plain text):
+FORMAT (Telegram plain text):
 - NO markdown. Never use **asterisks**, __underscores__, or #headers — Telegram \
-shows them as literal characters. Use plain lines and a few emoji instead.
-- Shape it like:
+shows them literally. Use plain lines and a few emoji.
+- Shape:
     Nombre del plato
     🥘 Ingredientes: item (cantidad), ...
-    👣 Pasos: 1) ...  2) ...  3) ...
+    👣 Pasos: 1) ...  2) ...
     💡 Tip: una técnica que mejora el resultado
-- Be concise. Lead with the dish. No preamble, no "¡Qué buena elección!", no \
-filler. One short framing line max.
+- Concise. Lead with the dish. No preamble, no filler, no "¡Qué buena elección!".
 
 RULES:
-- Cook with what's in the PANTRY. If a key item is missing, give the most \
-realistic substitution — not a shopping list.
+- Cook with what's in the PANTRY. Missing a key item -> give the most realistic \
+substitution, not a shopping list.
 - ALLERGIES and dietary restrictions in the profile are absolute. Never break them.
-- Only propose techniques the user's EQUIPMENT and methods allow. No oven -> \
-don't roast. No blender -> no purées.
-- Calibrate to SKILL and RANK: lower level -> simpler steps, explain the \
-technique; higher level -> assume competence, go deeper. Occasionally teach ONE \
-technique slightly above their level to help them grow.
+- Only propose techniques the EQUIPMENT and methods allow. No oven -> no roasting.
+- PREFERENCES ARE AN ANCHOR, NOT A CAGE: lean on what they like, but regularly \
+offer one adjacent option that stretches their palate. Never trap them in a loop \
+of the same flavors.
+- INGREDIENTS ARE VERSATILE: never treat a product as single-use. When useful, \
+show that something in their pantry can become more than the obvious dish.
+- Calibrate complexity to SKILL and RANK. When you use a real cooking term \
+(sauté, emulsify, temper, braise...), briefly teach it the first time so the user \
+learns the vocabulary instead of being gatekept by it. Occasionally teach ONE \
+technique slightly above their level.
 - Fit the GOALS (macros, calories) without killing flavor.
-- Use the TASTE HISTORY: lean into what they liked, avoid what they disliked, \
-and mention it briefly when relevant.
-- Ground everything in real gastronomy: name the technique and WHY it works; use \
-regional/seasonal produce for their region; season in layers; mise en place.
+- Use the TASTE HISTORY: lean into what they liked, avoid what they disliked.
+- Ground everything in real gastronomy: name the technique and WHY it works; \
+use regional/seasonal produce for their region; season in layers.
 - Don't repeat recently served dishes.
 """
 
 # ---------------------------------------------------------------------------
-# Bilingual UI strings for command confirmations
+# Command aliases — every action accepts BOTH languages.
+# Maps a typed command word (no slash) to a canonical action name.
+# ---------------------------------------------------------------------------
+ALIASES = {
+    "start": "help", "help": "help", "ayuda": "help", "menu": "help",
+    "id": "id",
+    "activar": "redeem", "redeem": "redeem",
+    "idioma": "lang", "language": "lang", "lang": "lang",
+    "perfil": "profile", "profile": "profile",
+    "equipo": "equipment", "equipment": "equipment", "equip": "equipment",
+    "skill": "skill", "habilidad": "skill",
+    "despensa": "pantry", "pantry": "pantry",
+    "gusto": "taste", "taste": "taste",
+    "historial": "history", "history": "history",
+    "nivel": "rank", "level": "rank", "rank": "rank",
+    # owner-only
+    "gencode": "gencode", "codes": "codes", "codigos": "codes",
+    "allow": "allow", "deny": "deny", "allowed": "allowed",
+}
+
+# ---------------------------------------------------------------------------
+# Bilingual strings
 # ---------------------------------------------------------------------------
 UI = {
     "es": {
         "welcome": "🔪 Chef de Dissident Labs a la orden.",
         "profile_saved": "Perfil guardado. Eso no se me olvida.",
         "profile_show": "Tu perfil:\n{v}",
-        "equip_saved": "Equipo de cocina guardado: {v}",
+        "equip_saved": "Equipo guardado: {v}",
         "equip_show": "Tu equipo:\n{v}",
         "skill_saved": "Nivel declarado: {v}",
         "skill_ask": "Dime tu nivel: /skill principiante | intermedio | avanzado",
         "pantry_saved": "Despensa actualizada: {v}",
         "pantry_show": "Despensa: {v}",
+        "pantry_empty_cook": "Primero dime qué tienes: /despensa pollo, arroz, ajo...",
         "taste_saved": "Anotado en tu paladar. 📝 (+{xp} XP)",
         "taste_ask": "Dime qué te gustó o no: /gusto me encantó el hogao",
         "history": "Últimas recetas:\n{v}",
         "history_empty": "Aún no te he cocinado nada.",
-        "lang_set": "Idioma de comandos: Español 🇪🇸",
+        "lang_set": "Idioma: Español 🇪🇸",
         "empty": "(vacío)",
         "levelup": "\n\n🎉 ¡Subiste de rango! Ahora eres {v}",
         "busy": "El chef está saturado, dame un minuto. 🔥",
         "brain": "Problema con el cerebro del chef ({v}). Intenta de nuevo.",
         "burned": "Algo se quemó en la cocina. Ya lo reviso.",
         "your_id": "Tu ID de Telegram es: {v}",
-        "denied": "🔒 Necesitas un código de acceso para usar el chef.\nEnvía: /activar TU-CODIGO",
-        "activated": "✅ ¡Acceso activado! Bienvenido a la cocina. Escribe /help.",
+        "denied": "🔒 Necesitas un código de acceso.\nEnvía: /activar TU-CODIGO",
+        "activated": "✅ ¡Acceso activado! Escribe /help.",
         "code_bad": "❌ Código inválido o ya usado.",
         "code_new": "Nuevo código: {v}",
-        "allowed_list": "Usuarios con acceso:\n{v}",
+        "allowed_list": "Con acceso:\n{v}",
         "codes_list": "Códigos:\n{v}",
         "user_allowed": "✅ Usuario {v} agregado.",
         "user_denied": "🚫 Usuario {v} removido.",
+        "rate_thanks": "¡Anotado! 📝 (+{xp} XP)",
+        "cooking": "Cocinando... 🔥",
+        # reply-keyboard button labels
+        "btn_cook": "🍳 ¿Qué cocino?",
+        "btn_pantry": "📋 Despensa",
+        "btn_rank": "📊 Nivel",
+        "btn_help": "❓ Ayuda",
+        # inline rating labels
+        "r_love": "👍 Me encantó",
+        "r_no": "👎 No fue",
+        "r_spicy": "🌶️ Muy picante",
+        "r_again": "🔁 Otra",
     },
     "en": {
         "welcome": "🔪 Dissident Labs Chef at your service.",
         "profile_saved": "Profile saved. I won't forget that.",
         "profile_show": "Your profile:\n{v}",
-        "equip_saved": "Kitchen equipment saved: {v}",
+        "equip_saved": "Equipment saved: {v}",
         "equip_show": "Your equipment:\n{v}",
         "skill_saved": "Skill level set: {v}",
         "skill_ask": "Tell me your level: /skill beginner | intermediate | advanced",
         "pantry_saved": "Pantry updated: {v}",
         "pantry_show": "Pantry: {v}",
+        "pantry_empty_cook": "First tell me what you have: /pantry chicken, rice, garlic...",
         "taste_saved": "Logged to your palate. 📝 (+{xp} XP)",
         "taste_ask": "Tell me what you liked or not: /taste loved the garlic sauce",
         "history": "Recent dishes:\n{v}",
         "history_empty": "I haven't cooked for you yet.",
-        "lang_set": "Command language: English 🇬🇧",
+        "lang_set": "Language: English 🇬🇧",
         "empty": "(empty)",
         "levelup": "\n\n🎉 Rank up! You're now {v}",
         "busy": "The chef is slammed, give me a minute. 🔥",
         "brain": "Chef's brain hiccup ({v}). Try again.",
         "burned": "Something burned in the kitchen. Looking into it.",
         "your_id": "Your Telegram ID is: {v}",
-        "denied": "🔒 You need an access code to use the chef.\nSend: /activar YOUR-CODE",
-        "activated": "✅ Access granted! Welcome to the kitchen. Type /help.",
+        "denied": "🔒 You need an access code.\nSend: /activar YOUR-CODE",
+        "activated": "✅ Access granted! Type /help.",
         "code_bad": "❌ Invalid or already-used code.",
         "code_new": "New code: {v}",
-        "allowed_list": "Users with access:\n{v}",
+        "allowed_list": "With access:\n{v}",
         "codes_list": "Codes:\n{v}",
         "user_allowed": "✅ User {v} added.",
         "user_denied": "🚫 User {v} removed.",
+        "rate_thanks": "Logged! 📝 (+{xp} XP)",
+        "cooking": "Cooking... 🔥",
+        "btn_cook": "🍳 What can I cook?",
+        "btn_pantry": "📋 Pantry",
+        "btn_rank": "📊 Level",
+        "btn_help": "❓ Help",
+        "r_love": "👍 Loved it",
+        "r_no": "👎 Nope",
+        "r_spicy": "🌶️ Too spicy",
+        "r_again": "🔁 Another",
     },
 }
 
 HELP = {
     "es": (
-        "Comandos:\n"
+        "Comandos (funcionan en español o inglés):\n"
         "/perfil <texto> — metas, alergias, región, dieta\n"
-        "/equipo <texto> — herramientas y métodos disponibles (ej: estufa, sartén, sin horno)\n"
-        "/skill principiante|intermedio|avanzado — tu nivel de cocina\n"
-        "/despensa <items> — lo que tienes (separado por comas)\n"
+        "/equipo <texto> — herramientas y métodos (ej: estufa, sartén, sin horno)\n"
+        "/skill principiante|intermedio|avanzado — tu nivel\n"
+        "/despensa <items> — lo que tienes (comas)\n"
         "/gusto <texto> — registra una reacción\n"
         "/historial — últimas recetas\n"
-        "/nivel — tu rango de cocina 🍳\n"
-        "/idioma es|en — idioma de comandos\n"
-        "Todo lo demás: pídeme de comer. Ej: \"tengo pollo y arroz, algo rápido\""
+        "/nivel — tu rango 🍳\n"
+        "/idioma es|en — idioma\n"
+        "O usa los botones de abajo 👇, o pídeme de comer."
     ),
     "en": (
-        "Commands:\n"
-        "/perfil <text> — goals, allergies, region, diet\n"
-        "/equipo <text> — tools & methods you have (e.g. stove, pan, no oven)\n"
-        "/skill beginner|intermediate|advanced — your cooking level\n"
-        "/despensa <items> — what you have (comma-separated)\n"
-        "/gusto <text> — log a taste reaction\n"
-        "/historial — recent dishes\n"
-        "/nivel — your kitchen rank 🍳\n"
-        "/idioma es|en — command language\n"
-        "Anything else: ask for food. e.g. \"I have chicken and rice, something quick\""
+        "Commands (work in English or Spanish):\n"
+        "/profile <text> — goals, allergies, region, diet\n"
+        "/equipment <text> — tools & methods (e.g. stove, pan, no oven)\n"
+        "/skill beginner|intermediate|advanced — your level\n"
+        "/pantry <items> — what you have (commas)\n"
+        "/taste <text> — log a reaction\n"
+        "/history — recent dishes\n"
+        "/rank — your rank 🍳\n"
+        "/language es|en — language\n"
+        "Or use the buttons below 👇, or just ask for food."
     ),
 }
 
@@ -177,23 +224,58 @@ def t(lang: str, key: str, **kw) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Telegram + output helpers
+# Telegram send helpers (now with optional keyboards)
 # ---------------------------------------------------------------------------
 def clean(text: str) -> str:
-    """Belt-and-suspenders: strip stray markdown the model might still emit."""
     text = text.replace("**", "").replace("__", "")
-    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)  # drop leading # headers
+    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
     return text.strip()
 
 
-def send_message(chat_id: int, text: str) -> None:
+def reply_keyboard(lang: str) -> dict:
+    """Persistent tap-buttons at the bottom, in the user's language."""
+    return {
+        "keyboard": [
+            [{"text": t(lang, "btn_cook")}, {"text": t(lang, "btn_pantry")}],
+            [{"text": t(lang, "btn_rank")}, {"text": t(lang, "btn_help")}],
+        ],
+        "resize_keyboard": True,
+    }
+
+
+def rating_keyboard(lang: str) -> dict:
+    """Inline buttons under a recipe — tapping logs a taste_event."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": t(lang, "r_love"), "callback_data": "rate:love"},
+                {"text": t(lang, "r_no"), "callback_data": "rate:no"},
+            ],
+            [
+                {"text": t(lang, "r_spicy"), "callback_data": "rate:spicy"},
+                {"text": t(lang, "r_again"), "callback_data": "rate:again"},
+            ],
+        ]
+    }
+
+
+def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> None:
     text = clean(text)
-    for i in range(0, len(text), 4000):  # Telegram caps at 4096 chars
-        requests.post(
-            f"{TG_API}/sendMessage",
-            json={"chat_id": chat_id, "text": text[i : i + 4000]},
-            timeout=30,
-        )
+    chunks = [text[i : i + 4000] for i in range(0, len(text), 4000)] or [""]
+    for idx, chunk in enumerate(chunks):
+        payload = {"chat_id": chat_id, "text": chunk}
+        if reply_markup and idx == len(chunks) - 1:  # markup only on the last chunk
+            payload["reply_markup"] = reply_markup
+        requests.post(f"{TG_API}/sendMessage", json=payload, timeout=30)
+
+
+def answer_callback(callback_id: str, text: str = "") -> None:
+    """Stops the little spinner on the tapped button; optional toast text."""
+    requests.post(
+        f"{TG_API}/answerCallbackQuery",
+        json={"callback_query_id": callback_id, "text": text},
+        timeout=30,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +287,6 @@ def ask_chef(chat_id: int, user_message: str) -> str:
     tastes = db.recent_tastes(chat_id, limit=15)
     recipes = db.recent_recipe_titles(chat_id, limit=5)
     xp = db.get_xp(chat_id)
-
     context = (
         f"PROFILE (goals/allergies/region/diet):\n{(u['profile'] if u else None) or '(none yet)'}\n\n"
         f"EQUIPMENT & METHODS:\n{(u['equipment'] if u else None) or '(unknown)'}\n\n"
@@ -216,134 +297,153 @@ def ask_chef(chat_id: int, user_message: str) -> str:
         f"RECENTLY SERVED (do not repeat):\n{chr(10).join(recipes) if recipes else '(none)'}\n\n"
         f"USER MESSAGE:\n{user_message}"
     )
-
     response = client.messages.create(
-        model=MODEL,
-        max_tokens=4000,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": context}],
+        model=MODEL, max_tokens=4000, thinking={"type": "adaptive"},
+        system=SYSTEM_PROMPT, messages=[{"role": "user", "content": context}],
     )
     parts = [b.text for b in response.content if b.type == "text"]
     return "\n".join(parts).strip() or "(el chef se quedó sin palabras)"
 
 
-# ---------------------------------------------------------------------------
-# Command handling
-# ---------------------------------------------------------------------------
-def _arg(text: str, cmd: str) -> str:
-    return text[len(cmd):].strip()
+def cook_and_send(chat_id: int, lang: str, request: str) -> None:
+    """Ask the chef, log the recipe, award XP, send with rating buttons."""
+    reply = ask_chef(chat_id, request)
+    db.log_recipe(chat_id, reply)
+    old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
+    up = levels.leveled_up(old, new)
+    if up:
+        reply += t(lang, "levelup", v=up)
+    send_message(chat_id, reply, reply_markup=rating_keyboard(lang))
 
 
+# ---------------------------------------------------------------------------
+# Command parsing
+# ---------------------------------------------------------------------------
+def parse_command(text: str):
+    """Return (action, arg) if it's a known command, else (None, text)."""
+    if not text.startswith("/"):
+        return None, text
+    head, _, rest = text.partition(" ")
+    word = head[1:].split("@")[0].lower()  # strip slash and any @botname
+    return ALIASES.get(word), rest.strip()
+
+
+def is_button(text: str, lang: str, key: str) -> bool:
+    return text == t(lang, key)
+
+
+# ---------------------------------------------------------------------------
+# Message handling
+# ---------------------------------------------------------------------------
 def handle_message(chat_id: int, text: str) -> None:
     db.ensure_user(chat_id)
     lang = db.get_lang(chat_id)
     text = text.strip()
+    action, arg = parse_command(text)
 
-    # --- Always-open commands (work even without access) ---------------------
-    if text.startswith("/id"):
+    # Map reply-keyboard taps (which arrive as plain text) to actions
+    if action is None:
+        if is_button(text, lang, "btn_cook"):
+            action = "cook_pantry"
+        elif is_button(text, lang, "btn_pantry"):
+            action, arg = "pantry", ""
+        elif is_button(text, lang, "btn_rank"):
+            action = "rank"
+        elif is_button(text, lang, "btn_help"):
+            action = "help"
+
+    # --- Always-open actions (work without access) ---------------------------
+    if action == "id":
         send_message(chat_id, t(lang, "your_id", v=chat_id))
         return
-
-    if text.startswith("/activar") or text.startswith("/redeem"):
-        cmd = "/activar" if text.startswith("/activar") else "/redeem"
-        code = _arg(text, cmd).strip().upper()
-        if db.redeem_code(code, chat_id):
-            send_message(chat_id, t(lang, "activated"))
+    if action == "redeem":
+        if db.redeem_code(arg.strip().upper(), chat_id):
+            send_message(chat_id, t(lang, "activated"), reply_markup=reply_keyboard(lang))
         else:
             send_message(chat_id, t(lang, "code_bad"))
         return
 
-    # --- Owner-only management commands ---------------------------------------
+    # --- Owner-only management ------------------------------------------------
     if is_owner(chat_id):
-        if text.startswith("/gencode"):
+        if action == "gencode":
             code = new_code()
-            db.create_code(code, _arg(text, "/gencode"))
+            db.create_code(code, arg)
             send_message(chat_id, t(lang, "code_new", v=code))
             return
-        if text.startswith("/codes"):
+        if action == "codes":
             rows = db.list_codes()
-            body = "\n".join(f"{c} {'· USADO por '+str(u) if u else '· libre'} {n}" for c, n, u in rows) or "—"
+            body = "\n".join(f"{c} {'· USADO ' + str(u) if u else '· libre'} {n}" for c, n, u in rows) or "—"
             send_message(chat_id, t(lang, "codes_list", v=body))
             return
-        if text.startswith("/allow"):
-            arg = _arg(text, "/allow").split(maxsplit=1)
-            if arg and arg[0].lstrip("-").isdigit():
-                target = int(arg[0])
-                db.allow_user(target, arg[1] if len(arg) > 1 else "")
-                send_message(chat_id, t(lang, "user_allowed", v=target))
+        if action == "allow":
+            bits = arg.split(maxsplit=1)
+            if bits and bits[0].lstrip("-").isdigit():
+                db.allow_user(int(bits[0]), bits[1] if len(bits) > 1 else "")
+                send_message(chat_id, t(lang, "user_allowed", v=bits[0]))
             return
-        if text.startswith("/deny"):
-            arg = _arg(text, "/deny").strip()
-            if arg.lstrip("-").isdigit():
-                db.deny_user(int(arg))
-                send_message(chat_id, t(lang, "user_denied", v=arg))
+        if action == "deny":
+            if arg.strip().lstrip("-").isdigit():
+                db.deny_user(int(arg.strip()))
+                send_message(chat_id, t(lang, "user_denied", v=arg.strip()))
             return
-        if text.startswith("/allowed"):
+        if action == "allowed":
             rows = db.list_allowed()
             body = "\n".join(f"{cid} {note}" for cid, note in rows) or "—"
             send_message(chat_id, t(lang, "allowed_list", v=body))
             return
 
-    # --- THE GATE: everything below costs API money, so check access first ----
+    # --- THE GATE -------------------------------------------------------------
     if not (is_owner(chat_id) or db.is_allowed(chat_id)):
-        if text.startswith("/start") or text.startswith("/help"):
+        if action == "help":
             send_message(chat_id, t(lang, "welcome") + "\n\n" + t(lang, "denied"))
         else:
             send_message(chat_id, t(lang, "denied"))
         return
 
-    # --- From here on, the user is authorized --------------------------------
-    if text.startswith("/start") or text.startswith("/help"):
-        send_message(chat_id, t(lang, "welcome") + "\n\n" + HELP[lang])
+    # --- Authorized actions ---------------------------------------------------
+    if action == "help":
+        send_message(chat_id, t(lang, "welcome") + "\n\n" + HELP[lang], reply_markup=reply_keyboard(lang))
 
-    elif text.startswith("/idioma"):
-        choice = _arg(text, "/idioma").lower()
-        new = "en" if choice.startswith("en") else "es"
+    elif action == "lang":
+        new = "en" if arg.lower().startswith("en") else "es"
         db.set_lang(chat_id, new)
-        send_message(chat_id, t(new, "lang_set"))
+        send_message(chat_id, t(new, "lang_set"), reply_markup=reply_keyboard(new))
 
-    elif text.startswith("/perfil"):
-        body = _arg(text, "/perfil")
-        if body:
-            db.set_profile(chat_id, body)
+    elif action == "profile":
+        if arg:
+            db.set_profile(chat_id, arg)
             send_message(chat_id, t(lang, "profile_saved"))
         else:
             u = db.get_user(chat_id)
             send_message(chat_id, t(lang, "profile_show", v=(u["profile"] if u else None) or t(lang, "empty")))
 
-    elif text.startswith("/equipo"):
-        body = _arg(text, "/equipo")
-        if body:
-            db.set_equipment(chat_id, body)
-            send_message(chat_id, t(lang, "equip_saved", v=body))
+    elif action == "equipment":
+        if arg:
+            db.set_equipment(chat_id, arg)
+            send_message(chat_id, t(lang, "equip_saved", v=arg))
         else:
             u = db.get_user(chat_id)
             send_message(chat_id, t(lang, "equip_show", v=(u["equipment"] if u else None) or t(lang, "empty")))
 
-    elif text.startswith("/skill"):
-        body = _arg(text, "/skill")
-        if body:
-            db.set_skill(chat_id, body)
-            send_message(chat_id, t(lang, "skill_saved", v=body))
+    elif action == "skill":
+        if arg:
+            db.set_skill(chat_id, arg)
+            send_message(chat_id, t(lang, "skill_saved", v=arg))
         else:
             send_message(chat_id, t(lang, "skill_ask"))
 
-    elif text.startswith("/despensa"):
-        body = _arg(text, "/despensa")
-        if body:
-            items = [x.strip() for x in body.split(",") if x.strip()]
+    elif action == "pantry":
+        if arg:
+            items = [x.strip() for x in arg.split(",") if x.strip()]
             db.set_pantry(chat_id, items)
             send_message(chat_id, t(lang, "pantry_saved", v=", ".join(items)))
         else:
             pantry = db.get_pantry(chat_id)
             send_message(chat_id, t(lang, "pantry_show", v=", ".join(pantry) if pantry else t(lang, "empty")))
 
-    elif text.startswith("/gusto") or text.startswith("/taste"):
-        cmd = "/gusto" if text.startswith("/gusto") else "/taste"
-        body = _arg(text, cmd)
-        if body:
-            db.log_taste(chat_id, body)
+    elif action == "taste":
+        if arg:
+            db.log_taste(chat_id, arg)
             old, new = db.add_xp(chat_id, levels.XP_PER_TASTE)
             msg = t(lang, "taste_saved", xp=levels.XP_PER_TASTE)
             up = levels.leveled_up(old, new)
@@ -353,39 +453,108 @@ def handle_message(chat_id: int, text: str) -> None:
         else:
             send_message(chat_id, t(lang, "taste_ask"))
 
-    elif text.startswith("/historial") or text.startswith("/history"):
+    elif action == "history":
         titles = db.recent_recipe_titles(chat_id, limit=10)
         send_message(chat_id, t(lang, "history", v="\n".join(titles)) if titles else t(lang, "history_empty"))
 
-    elif text.startswith("/nivel") or text.startswith("/level"):
-        send_message(chat_id, levels.status(db.get_xp(chat_id)))
+    elif action == "rank":
+        send_message(chat_id, levels.status(db.get_xp(chat_id)), reply_markup=reply_keyboard(lang))
+
+    elif action == "cook_pantry":
+        if db.get_pantry(chat_id):
+            send_message(chat_id, t(lang, "cooking"))
+            cook_and_send(chat_id, lang, "Cook something from my pantry.")
+        else:
+            send_message(chat_id, t(lang, "pantry_empty_cook"))
 
     else:
-        reply = ask_chef(chat_id, text)
-        db.log_recipe(chat_id, reply)
-        old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
-        up = levels.leveled_up(old, new)
-        if up:
-            reply += t(lang, "levelup", v=up)
-        send_message(chat_id, reply)
+        # free text -> cook
+        cook_and_send(chat_id, lang, text)
 
 
 # ---------------------------------------------------------------------------
-# Main loop — long polling. Bot only ever calls out; no inbound ports.
+# Button-tap (callback) handling — the one-tap rating system
+# ---------------------------------------------------------------------------
+def handle_callback(chat_id: int, data: str, callback_id: str) -> None:
+    lang = db.get_lang(chat_id)
+    if not (is_owner(chat_id) or db.is_allowed(chat_id)):
+        answer_callback(callback_id, t(lang, "denied"))
+        return
+
+    if data == "rate:again":
+        answer_callback(callback_id)
+        if db.get_pantry(chat_id):
+            cook_and_send(chat_id, lang, "Give me a different option from my pantry.")
+        else:
+            send_message(chat_id, t(lang, "pantry_empty_cook"))
+        return
+
+    if data.startswith("rate:"):
+        kind = data.split(":", 1)[1]
+        last = db.recent_recipe_titles(chat_id, limit=1)
+        dish = last[0] if last else "?"
+        note = {
+            "love": f"👍 le encantó: {dish}",
+            "no": f"👎 no le gustó: {dish}",
+            "spicy": f"🌶️ muy picante: {dish}",
+        }.get(kind)
+        if note:
+            db.log_taste(chat_id, note)
+            db.add_xp(chat_id, levels.XP_PER_TASTE)
+            answer_callback(callback_id, t(lang, "rate_thanks", xp=levels.XP_PER_TASTE))
+        else:
+            answer_callback(callback_id)
+
+
+# ---------------------------------------------------------------------------
+# Register the "/" command menu (nice-to-have; shows the menu button)
+# ---------------------------------------------------------------------------
+def register_commands() -> None:
+    cmds = [
+        {"command": "help", "description": "Menu / Ayuda"},
+        {"command": "perfil", "description": "Perfil: metas, alergias / Profile"},
+        {"command": "despensa", "description": "Despensa / Pantry"},
+        {"command": "equipo", "description": "Equipo / Equipment"},
+        {"command": "nivel", "description": "Tu rango / Your rank"},
+        {"command": "idioma", "description": "Idioma es|en / Language"},
+    ]
+    try:
+        requests.post(f"{TG_API}/setMyCommands", json={"commands": cmds}, timeout=30)
+    except requests.RequestException:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Main loop — long polling. Handles both messages and button taps.
 # ---------------------------------------------------------------------------
 def main() -> None:
     db.init()
-    print("Chef bot v0.2 corriendo. Ctrl+C para apagar.")
+    register_commands()
+    print("Chef bot v0.4 corriendo. Ctrl+C para apagar.")
     offset = None
     while True:
         try:
             resp = requests.get(
                 f"{TG_API}/getUpdates",
-                params={"timeout": 50, "offset": offset},
+                params={"timeout": 50, "offset": offset,
+                        "allowed_updates": '["message","callback_query"]'},
                 timeout=60,
             )
             for update in resp.json().get("result", []):
                 offset = update["update_id"] + 1
+
+                if "callback_query" in update:
+                    cq = update["callback_query"]
+                    chat_id = (cq.get("message", {}).get("chat") or {}).get("id")
+                    data = cq.get("data", "")
+                    if chat_id:
+                        try:
+                            handle_callback(chat_id, data, cq["id"])
+                        except Exception:
+                            traceback.print_exc()
+                            answer_callback(cq["id"])
+                    continue
+
                 msg = update.get("message") or {}
                 chat_id = (msg.get("chat") or {}).get("id")
                 text = msg.get("text")
