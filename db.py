@@ -216,3 +216,42 @@ def list_codes() -> list[tuple[str, str, int]]:
             "SELECT code, note, used_by FROM access_codes ORDER BY created"
         ).fetchall()
         return [(r["code"], r["note"] or "", r["used_by"]) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# technique skill tree
+# ---------------------------------------------------------------------------
+def add_available_techniques(chat_id: int, names: list[str]) -> None:
+    """Add techniques the user's tools enable (as 'available', practiced=0)."""
+    with _conn() as conn:
+        for n in names:
+            n = n.strip().lower()
+            if n:
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_techniques (chat_id, name) VALUES (?, ?)",
+                    (chat_id, n),
+                )
+
+
+def practice_techniques(chat_id: int, names: list[str]) -> None:
+    """Mark techniques as practiced (used in a real recipe) — upsert + increment."""
+    with _conn() as conn:
+        for n in names:
+            n = n.strip().lower()
+            if not n:
+                continue
+            conn.execute(
+                "INSERT INTO user_techniques (chat_id, name, practiced) VALUES (?, ?, 1) "
+                "ON CONFLICT(chat_id, name) DO UPDATE SET practiced = practiced + 1",
+                (chat_id, n),
+            )
+
+
+def get_techniques(chat_id: int) -> list[tuple[str, int]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name, practiced FROM user_techniques WHERE chat_id = ? "
+            "ORDER BY practiced DESC, name",
+            (chat_id,),
+        ).fetchall()
+        return [(r["name"], r["practiced"]) for r in rows]

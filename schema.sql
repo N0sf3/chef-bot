@@ -49,3 +49,13 @@ CREATE TABLE IF NOT EXISTS access_codes (
     used_by  INTEGER,            -- chat_id that redeemed it (NULL = unused)
     created  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- The technique skill tree, per user. Derived from their equipment (what their
+-- tools ENABLE = available), then leveled up as they actually cook (practiced).
+CREATE TABLE IF NOT EXISTS user_techniques (
+    chat_id    INTEGER NOT NULL,
+    name       TEXT NOT NULL,           -- lowercase technique name
+    practiced  INTEGER NOT NULL DEFAULT 0,  -- 0 = available/locked, >0 = times cooked
+    added      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, name)
+);

@@ -79,7 +79,23 @@ technique slightly above their level.
 - Ground everything in real gastronomy: name the technique and WHY it works; \
 use regional/seasonal produce for their region; season in layers.
 - Don't repeat recently served dishes.
+
+TECHNIQUE TREE: the user has a skill tree tied to their equipment. Prefer \
+techniques they've already LEARNED; you may introduce ONE from their AVAILABLE \
+list and teach it briefly. Never use a technique their equipment can't do.
+At the VERY END of your reply, on its own final line, output exactly:
+TECHNIQUES: name1, name2, name3
+— the short lowercase cooking techniques this recipe uses. This line is parsed \
+by the app and removed before the user sees it. Keep it to real technique names \
+(sauté, braise, reduce, emulsify, roast, blanch, sear...), not ingredients.
 """
+
+# Small helper-prompt: turn a list of kitchen tools into the techniques they enable.
+EQUIP_PROMPT = (
+    "List the cooking techniques the given kitchen equipment makes possible. "
+    "Output ONLY a comma-separated list of short lowercase technique names "
+    "(e.g. sauté, boil, roast, deep fry, emulsify). No other text."
+)
 
 # ---------------------------------------------------------------------------
 # Command aliases — every action accepts BOTH languages.
@@ -97,6 +113,7 @@ ALIASES = {
     "gusto": "taste", "taste": "taste",
     "historial": "history", "history": "history",
     "nivel": "rank", "level": "rank", "rank": "rank",
+    "tecnicas": "techniques", "techniques": "techniques", "arbol": "techniques", "tree": "techniques",
     # owner-only
     "gencode": "gencode", "codes": "codes", "codigos": "codes",
     "allow": "allow", "deny": "deny", "allowed": "allowed",
@@ -138,6 +155,11 @@ UI = {
         "user_denied": "🚫 Usuario {v} removido.",
         "rate_thanks": "¡Anotado! 📝 (+{xp} XP)",
         "limit": "🍽️ Llegaste al límite de recetas de hoy. Vuelve mañana con hambre.",
+        "tree": "🌳 Tu árbol de técnicas:\n{v}",
+        "tree_empty": "Aún no tienes técnicas. Configura tu equipo con /equipo y cocina algo.",
+        "tree_mastered": "✅ Practicadas:",
+        "tree_available": "⬜ Disponibles (según tus herramientas):",
+        "equip_analyzed": "🌳 Analicé tus herramientas — árbol de técnicas actualizado. Mira /tecnicas",
         # reply-keyboard button labels
         "btn_cook": "🍳 ¿Qué cocino?",
         "btn_pantry": "📋 Despensa",
@@ -181,6 +203,11 @@ UI = {
         "user_denied": "🚫 User {v} removed.",
         "rate_thanks": "Logged! 📝 (+{xp} XP)",
         "limit": "🍽️ You hit today's recipe limit. Come back hungry tomorrow.",
+        "tree": "🌳 Your technique tree:\n{v}",
+        "tree_empty": "No techniques yet. Set your equipment with /equipment and cook something.",
+        "tree_mastered": "✅ Practiced:",
+        "tree_available": "⬜ Available (from your tools):",
+        "equip_analyzed": "🌳 Analyzed your tools — technique tree updated. See /techniques",
         "btn_cook": "🍳 What can I cook?",
         "btn_pantry": "📋 Pantry",
         "btn_rank": "📊 Level",
@@ -202,6 +229,7 @@ HELP = {
         "/gusto <texto> — registra una reacción\n"
         "/historial — últimas recetas\n"
         "/nivel — tu rango 🍳\n"
+        "/tecnicas — tu árbol de técnicas 🌳\n"
         "/idioma es|en — idioma\n"
         "O usa los botones de abajo 👇, o pídeme de comer."
     ),
@@ -214,6 +242,7 @@ HELP = {
         "/taste <text> — log a reaction\n"
         "/history — recent dishes\n"
         "/rank — your rank 🍳\n"
+        "/techniques — your technique tree 🌳\n"
         "/language es|en — language\n"
         "Or use the buttons below 👇, or just ask for food."
     ),
@@ -300,11 +329,16 @@ def ask_chef(chat_id: int, user_message: str) -> str:
     tastes = db.recent_tastes(chat_id, limit=15)
     recipes = db.recent_recipe_titles(chat_id, limit=5)
     xp = db.get_xp(chat_id)
+    techs = db.get_techniques(chat_id)
+    learned = [f"{n}(x{c})" for n, c in techs if c > 0]
+    available = [n for n, c in techs if c == 0]
     context = (
         f"PROFILE (goals/allergies/region/diet):\n{(u['profile'] if u else None) or '(none yet)'}\n\n"
         f"EQUIPMENT & METHODS:\n{(u['equipment'] if u else None) or '(unknown)'}\n\n"
         f"SELF-REPORTED SKILL: {(u['skill'] if u else None) or '(unspecified)'}\n"
-        f"KITCHEN RANK: {levels.title_for(xp)} ({xp} XP)\n\n"
+        f"KITCHEN RANK: {levels.title_for(xp)} ({xp} XP)\n"
+        f"LEARNED TECHNIQUES: {', '.join(learned) if learned else '(none yet)'}\n"
+        f"AVAILABLE TECHNIQUES (from tools, not yet practiced): {', '.join(available) if available else '(none)'}\n\n"
         f"PANTRY:\n{', '.join(pantry) if pantry else '(empty)'}\n\n"
         f"TASTE HISTORY (recent reactions):\n{chr(10).join(tastes) if tastes else '(no data yet)'}\n\n"
         f"RECENTLY SERVED (do not repeat):\n{chr(10).join(recipes) if recipes else '(none)'}\n\n"
@@ -321,6 +355,41 @@ def ask_chef(chat_id: int, user_message: str) -> str:
     return "\n".join(parts).strip() or "(el chef se quedó sin palabras)"
 
 
+def extract_techniques(text: str) -> tuple[list[str], str]:
+    """Pull the 'TECHNIQUES: ...' trailer out; return (names, cleaned_text)."""
+    m = re.search(r"(?im)^\s*TECHNIQUES:\s*(.+?)\s*$", text)
+    if not m:
+        return [], text
+    names = [x.strip().lower() for x in m.group(1).split(",") if x.strip()]
+    cleaned = (text[: m.start()] + text[m.end():]).strip()
+    return names, cleaned
+
+
+def derive_techniques(equipment_text: str) -> list[str]:
+    """Ask the model which techniques a set of tools enables. One cheap call."""
+    resp = client.messages.create(
+        model=MODEL, max_tokens=200,
+        output_config={"effort": "low"},
+        system=EQUIP_PROMPT,
+        messages=[{"role": "user", "content": equipment_text}],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    return [x.strip().lower() for x in text.split(",") if x.strip()][:40]
+
+
+def render_tree(techs: list[tuple[str, int]], lang: str) -> str:
+    practiced = [(n, c) for n, c in techs if c > 0]
+    available = [n for n, c in techs if c == 0]
+    lines = []
+    if practiced:
+        lines.append(t(lang, "tree_mastered"))
+        lines += [f"  • {n} ×{c}" for n, c in practiced]
+    if available:
+        lines.append(t(lang, "tree_available"))
+        lines += [f"  • {n}" for n in available]
+    return "\n".join(lines)
+
+
 def cook_and_send(chat_id: int, lang: str, request: str) -> None:
     """Ask the chef, log the recipe, award XP, send with rating buttons."""
     # Per-user daily cost cap (owner exempt) — protects your API bill.
@@ -329,6 +398,8 @@ def cook_and_send(chat_id: int, lang: str, request: str) -> None:
         return
     send_typing(chat_id)  # 'Chef is typing...' while the model works
     reply = ask_chef(chat_id, request)
+    techs_used, reply = extract_techniques(reply)  # pull + strip the trailer
+    db.practice_techniques(chat_id, techs_used)     # level up the tree
     db.log_recipe(chat_id, reply)
     old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
     up = levels.leveled_up(old, new)
@@ -442,6 +513,15 @@ def handle_message(chat_id: int, text: str) -> None:
         if arg:
             db.set_equipment(chat_id, arg)
             send_message(chat_id, t(lang, "equip_saved", v=arg))
+            # Derive which techniques these tools enable -> grow the tree.
+            send_typing(chat_id)
+            try:
+                names = derive_techniques(arg)
+                if names:
+                    db.add_available_techniques(chat_id, names)
+                    send_message(chat_id, t(lang, "equip_analyzed"))
+            except Exception:
+                traceback.print_exc()  # tree derivation is best-effort, never fatal
         else:
             u = db.get_user(chat_id)
             send_message(chat_id, t(lang, "equip_show", v=(u["equipment"] if u else None) or t(lang, "empty")))
@@ -480,6 +560,13 @@ def handle_message(chat_id: int, text: str) -> None:
 
     elif action == "rank":
         send_message(chat_id, levels.status(db.get_xp(chat_id)), reply_markup=reply_keyboard(lang))
+
+    elif action == "techniques":
+        techs = db.get_techniques(chat_id)
+        if techs:
+            send_message(chat_id, t(lang, "tree", v=render_tree(techs, lang)))
+        else:
+            send_message(chat_id, t(lang, "tree_empty"))
 
     elif action == "cook_pantry":
         if db.get_pantry(chat_id):
