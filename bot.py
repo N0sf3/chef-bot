@@ -85,16 +85,19 @@ techniques they've already LEARNED; you may introduce ONE from their AVAILABLE \
 list and teach it briefly. Never use a technique their equipment can't do.
 At the VERY END of your reply, on its own final line, output exactly:
 TECHNIQUES: name1, name2, name3
-— the short lowercase cooking techniques this recipe uses. This line is parsed \
-by the app and removed before the user sees it. Keep it to real technique names \
-(sauté, braise, reduce, emulsify, roast, blanch, sear...), not ingredients.
+— the short lowercase cooking techniques this recipe uses, IN THE SAME LANGUAGE \
+as your reply (Spanish for a Spanish reply: saltear, sellar, reducir, emulsionar, \
+pochar...). This line is parsed by the app and removed before the user sees it. \
+Real technique names only, not ingredients.
 """
+
+LANG_NAME = {"es": "Spanish", "en": "English"}
 
 # Small helper-prompt: turn a list of kitchen tools into the techniques they enable.
 EQUIP_PROMPT = (
     "List the cooking techniques the given kitchen equipment makes possible. "
-    "Output ONLY a comma-separated list of short lowercase technique names "
-    "(e.g. sauté, boil, roast, deep fry, emulsify). No other text."
+    "Output ONLY a comma-separated list of short lowercase technique names. "
+    "No other text."
 )
 
 # ---------------------------------------------------------------------------
@@ -162,8 +165,10 @@ UI = {
         "equip_analyzed": "🌳 Analicé tus herramientas — árbol de técnicas actualizado. Mira /tecnicas",
         # reply-keyboard button labels
         "btn_cook": "🍳 ¿Qué cocino?",
+        "btn_tree": "🌳 Técnicas",
         "btn_pantry": "📋 Despensa",
         "btn_rank": "📊 Nivel",
+        "btn_equip": "🔧 Equipo",
         "btn_help": "❓ Ayuda",
         # inline rating labels
         "r_love": "👍 Me encantó",
@@ -209,8 +214,10 @@ UI = {
         "tree_available": "⬜ Available (from your tools):",
         "equip_analyzed": "🌳 Analyzed your tools — technique tree updated. See /techniques",
         "btn_cook": "🍳 What can I cook?",
+        "btn_tree": "🌳 Techniques",
         "btn_pantry": "📋 Pantry",
         "btn_rank": "📊 Level",
+        "btn_equip": "🔧 Equipment",
         "btn_help": "❓ Help",
         "r_love": "👍 Loved it",
         "r_no": "👎 Nope",
@@ -266,8 +273,9 @@ def reply_keyboard(lang: str) -> dict:
     """Persistent tap-buttons at the bottom, in the user's language."""
     return {
         "keyboard": [
-            [{"text": t(lang, "btn_cook")}, {"text": t(lang, "btn_pantry")}],
-            [{"text": t(lang, "btn_rank")}, {"text": t(lang, "btn_help")}],
+            [{"text": t(lang, "btn_cook")}, {"text": t(lang, "btn_tree")}],
+            [{"text": t(lang, "btn_pantry")}, {"text": t(lang, "btn_rank")}],
+            [{"text": t(lang, "btn_equip")}, {"text": t(lang, "btn_help")}],
         ],
         "resize_keyboard": True,
     }
@@ -365,12 +373,12 @@ def extract_techniques(text: str) -> tuple[list[str], str]:
     return names, cleaned
 
 
-def derive_techniques(equipment_text: str) -> list[str]:
-    """Ask the model which techniques a set of tools enables. One cheap call."""
+def derive_techniques(equipment_text: str, lang: str) -> list[str]:
+    """Ask the model which techniques a set of tools enables, in the user's language."""
     resp = client.messages.create(
         model=MODEL, max_tokens=200,
         output_config={"effort": "low"},
-        system=EQUIP_PROMPT,
+        system=EQUIP_PROMPT + f" Output the names in {LANG_NAME.get(lang, 'Spanish')}.",
         messages=[{"role": "user", "content": equipment_text}],
     )
     text = "".join(b.text for b in resp.content if b.type == "text")
@@ -437,10 +445,14 @@ def handle_message(chat_id: int, text: str) -> None:
     if action is None:
         if is_button(text, lang, "btn_cook"):
             action = "cook_pantry"
+        elif is_button(text, lang, "btn_tree"):
+            action = "techniques"
         elif is_button(text, lang, "btn_pantry"):
             action, arg = "pantry", ""
         elif is_button(text, lang, "btn_rank"):
             action = "rank"
+        elif is_button(text, lang, "btn_equip"):
+            action, arg = "equipment", ""
         elif is_button(text, lang, "btn_help"):
             action = "help"
 
@@ -516,7 +528,7 @@ def handle_message(chat_id: int, text: str) -> None:
             # Derive which techniques these tools enable -> grow the tree.
             send_typing(chat_id)
             try:
-                names = derive_techniques(arg)
+                names = derive_techniques(arg, lang)
                 if names:
                     db.add_available_techniques(chat_id, names)
                     send_message(chat_id, t(lang, "equip_analyzed"))
