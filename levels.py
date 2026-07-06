@@ -1,45 +1,43 @@
 """
 levels.py — the light RPG layer.
 
-You earn XP by cooking and by logging tastes. XP maps to a kitchen-brigade
-rank. The rank is shown to you (engagement) AND fed to the chef (so recipes
-grow with you). No stats to manage, no grind — just a sense of progression.
+You earn XP by cooking and rating. XP maps to a kitchen rank, shown to you and
+fed to the chef so recipes grow with you. Rank titles are localized (ES/EN).
 """
 
-# (xp_threshold, title, emoji) — real kitchen brigade progression.
-RANKS = [
-    (0,    "Aprendiz",          "🥄"),
-    (50,   "Pinche",            "🔪"),
-    (120,  "Garde Manger",      "🥗"),
-    (220,  "Cocinero de línea", "🔥"),
-    (350,  "Chef de Partie",    "🍳"),
-    (520,  "Sous Chef",         "🎩"),
-    (750,  "Chef",              "👨‍🍳"),
-    (1100, "Chef Ejecutivo",    "⭐"),
-    (1600, "Maestro",           "🌟"),
-]
+# Shared thresholds + emoji; titles are per-language.
+THRESHOLDS = [0, 50, 120, 220, 350, 520, 750, 1100, 1600]
+EMOJIS = ["🥄", "🔪", "🥗", "🔥", "🍳", "🎩", "👨‍🍳", "⭐", "🌟"]
+TITLES = {
+    "es": ["Aprendiz", "Pinche", "Ayudante de cocina", "Cocinero de línea",
+           "Cocinero de partida", "Subchef", "Jefe de cocina", "Chef Ejecutivo", "Maestro"],
+    "en": ["Apprentice", "Prep Cook", "Pantry Cook", "Line Cook",
+           "Station Chef", "Sous Chef", "Head Chef", "Executive Chef", "Master"],
+}
 
 XP_PER_RECIPE = 10
 XP_PER_TASTE = 5
 
 
-def rank_for(xp: int):
-    """Return (current_rank, next_rank_or_None) for a given XP total."""
-    current = RANKS[0]
-    nxt = None
-    for i, rank in enumerate(RANKS):
-        if xp >= rank[0]:
-            current = rank
-            nxt = RANKS[i + 1] if i + 1 < len(RANKS) else None
+def _index_for(xp: int) -> int:
+    """Which rank index this XP total falls into."""
+    idx = 0
+    for i, thr in enumerate(THRESHOLDS):
+        if xp >= thr:
+            idx = i
         else:
             break
-    return current, nxt
+    return idx
 
 
-def title_for(xp: int) -> str:
-    """Just the '🍳 Chef de Partie' string — used to feed the chef."""
-    thr, title, emoji = rank_for(xp)[0]
-    return f"{emoji} {title}"
+def _titles(lang: str) -> list[str]:
+    return TITLES.get(lang, TITLES["es"])
+
+
+def title_for(xp: int, lang: str = "es") -> str:
+    """Just the '🍳 Cocinero de línea' string — for display and chef context."""
+    i = _index_for(xp)
+    return f"{EMOJIS[i]} {_titles(lang)[i]}"
 
 
 def _bar(into: int, span: int, width: int = 10) -> str:
@@ -49,20 +47,21 @@ def _bar(into: int, span: int, width: int = 10) -> str:
 
 def status(xp: int, lang: str = "es") -> str:
     """The full RPG status card shown on /nivel."""
-    (thr, title, emoji), nxt = rank_for(xp)
-    if nxt:
-        into, span = xp - thr, nxt[0] - thr
+    i = _index_for(xp)
+    emoji, title, thr = EMOJIS[i], _titles(lang)[i], THRESHOLDS[i]
+    if i + 1 < len(THRESHOLDS):
+        nxt_thr, nxt_title, nxt_emoji = THRESHOLDS[i + 1], _titles(lang)[i + 1], EMOJIS[i + 1]
+        into, span = xp - thr, nxt_thr - thr
         return (
             f"{emoji} {title} · {xp} XP\n"
-            f"{_bar(into, span)}  {into}/{span} → {nxt[2]} {nxt[1]}"
+            f"{_bar(into, span)}  {into}/{span} → {nxt_emoji} {nxt_title}"
         )
     max_label = {"es": "(nivel máximo)", "en": "(max level)"}.get(lang, "(nivel máximo)")
     return f"{emoji} {title} {max_label} · {xp} XP 🏆"
 
 
-def leveled_up(old_xp: int, new_xp: int):
-    """If a threshold was crossed, return the new rank string, else None."""
-    if rank_for(old_xp)[0][1] != rank_for(new_xp)[0][1]:
-        thr, title, emoji = rank_for(new_xp)[0]
-        return f"{emoji} {title}"
+def leveled_up(old_xp: int, new_xp: int, lang: str = "es"):
+    """If a rank threshold was crossed, return the new rank string, else None."""
+    if _index_for(old_xp) != _index_for(new_xp):
+        return title_for(new_xp, lang)
     return None

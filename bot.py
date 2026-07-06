@@ -348,6 +348,7 @@ def ask_chef(chat_id: int, user_message: str) -> str:
     tastes = db.recent_tastes(chat_id, limit=15)
     recipes = db.recent_recipe_titles(chat_id, limit=5)
     xp = db.get_xp(chat_id)
+    ulang = (u["lang"] if u and u["lang"] else "es")
     techs = db.get_techniques(chat_id)
     learned = [f"{n}(x{c})" for n, c in techs if c > 0]
     available = [n for n, c in techs if c == 0]
@@ -355,7 +356,7 @@ def ask_chef(chat_id: int, user_message: str) -> str:
         f"PROFILE (goals/allergies/region/diet):\n{(u['profile'] if u else None) or '(none yet)'}\n\n"
         f"EQUIPMENT & METHODS:\n{(u['equipment'] if u else None) or '(unknown)'}\n\n"
         f"SELF-REPORTED SKILL: {(u['skill'] if u else None) or '(unspecified)'}\n"
-        f"KITCHEN RANK: {levels.title_for(xp)} ({xp} XP)\n"
+        f"KITCHEN RANK: {levels.title_for(xp, ulang)} ({xp} XP)\n"
         f"LEARNED TECHNIQUES: {', '.join(learned) if learned else '(none yet)'}\n"
         f"AVAILABLE TECHNIQUES (from tools, not yet practiced): {', '.join(available) if available else '(none)'}\n\n"
         f"PANTRY:\n{', '.join(pantry) if pantry else '(empty)'}\n\n"
@@ -421,7 +422,7 @@ def cook_and_send(chat_id: int, lang: str, request: str) -> None:
     db.practice_techniques(chat_id, techs_used)     # level up the tree
     db.log_recipe(chat_id, reply)
     old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
-    up = levels.leveled_up(old, new)
+    up = levels.leveled_up(old, new, lang)
     if up:
         reply += t(lang, "levelup", v=up)
     send_message(chat_id, reply, reply_markup=rating_keyboard(lang))
@@ -570,7 +571,7 @@ def handle_message(chat_id: int, text: str) -> None:
             db.log_taste(chat_id, arg)
             old, new = db.add_xp(chat_id, levels.XP_PER_TASTE)
             msg = t(lang, "taste_saved", xp=levels.XP_PER_TASTE)
-            up = levels.leveled_up(old, new)
+            up = levels.leveled_up(old, new, lang)
             if up:
                 msg += t(lang, "levelup", v=up)
             send_message(chat_id, msg)
