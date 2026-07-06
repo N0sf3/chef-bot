@@ -47,8 +47,8 @@ NOT a generic recipe site. You cook flavor-first: flavor bases, balancing \
 acid/fat/salt/heat, texture, and technique that actually matters. You know the \
 world's cuisines broadly — draw on any regional style that fits, not a fixed list.
 
-LANGUAGE: Reply in the SAME language the user writes in — Spanish or English. \
-Warm but direct.
+LANGUAGE: Write your ENTIRE reply in the language given as REPLY LANGUAGE in the \
+context below — ignore the language of the user's message. Warm but direct.
 
 FORMAT (Telegram plain text):
 - NO markdown. Never use **asterisks**, __underscores__, or #headers — Telegram \
@@ -136,6 +136,17 @@ ALIASES = {
 UI = {
     "es": {
         "welcome": "🔪 Chef de Dissident Labs a la orden.",
+        "intro": (
+            "👋 ¡Hola! Soy tu chef personal 🔪\n"
+            "Cocino con lo que tienes en casa, aprendo tus gustos y te enseño técnicas.\n\n"
+            "Empieza en 3 pasos:\n"
+            "1️⃣  📋 Pon tu despensa — dime qué tienes\n"
+            "2️⃣  🔧 Pon tu equipo — tus herramientas de cocina\n"
+            "3️⃣  🍳 Pídeme de comer\n\n"
+            "👇 Usa los botones de abajo, o solo escríbeme "
+            "(ej: \"algo rápido con pollo\").\n\n"
+            "Más comandos: /explica /reset /idioma /historial"
+        ),
         "profile_saved": "Perfil guardado. Eso no se me olvida.",
         "profile_show": "Tu perfil:\n{v}",
         "equip_saved": "Equipo guardado: {v}",
@@ -192,6 +203,17 @@ UI = {
     },
     "en": {
         "welcome": "🔪 Dissident Labs Chef at your service.",
+        "intro": (
+            "👋 Hi! I'm your personal chef 🔪\n"
+            "I cook with what you have at home, learn your tastes, and teach you techniques.\n\n"
+            "Start in 3 steps:\n"
+            "1️⃣  📋 Set your pantry — tell me what you have\n"
+            "2️⃣  🔧 Set your equipment — your kitchen tools\n"
+            "3️⃣  🍳 Ask me for food\n\n"
+            "👇 Use the buttons below, or just message me "
+            "(e.g. \"something quick with chicken\").\n\n"
+            "More commands: /explain /reset /language /history"
+        ),
         "profile_saved": "Profile saved. I won't forget that.",
         "profile_show": "Your profile:\n{v}",
         "equip_saved": "Equipment saved: {v}",
@@ -246,38 +268,6 @@ UI = {
     },
 }
 
-HELP = {
-    "es": (
-        "Comandos (funcionan en español o inglés):\n"
-        "/perfil <texto> — metas, alergias, región, dieta\n"
-        "/equipo <texto> — herramientas y métodos (ej: estufa, sartén, sin horno)\n"
-        "/habilidad principiante|intermedio|avanzado — tu nivel\n"
-        "/despensa <items> — lo que tienes (comas)\n"
-        "/gusto <texto> — registra una reacción\n"
-        "/historial — últimas recetas\n"
-        "/nivel — tu rango 🍳\n"
-        "/tecnicas — tu árbol de técnicas 🌳\n"
-        "/explica <técnica> — qué significa una técnica 📖\n"
-        "/reset — borra árbol, gustos o despensa 🧹\n"
-        "/idioma es|en — idioma\n"
-        "O usa los botones de abajo 👇, o pídeme de comer."
-    ),
-    "en": (
-        "Commands (work in English or Spanish):\n"
-        "/profile <text> — goals, allergies, region, diet\n"
-        "/equipment <text> — tools & methods (e.g. stove, pan, no oven)\n"
-        "/skill beginner|intermediate|advanced — your level\n"
-        "/pantry <items> — what you have (commas)\n"
-        "/taste <text> — log a reaction\n"
-        "/history — recent dishes\n"
-        "/rank — your rank 🍳\n"
-        "/techniques — your technique tree 🌳\n"
-        "/explain <technique> — what a technique means 📖\n"
-        "/reset — clear tree, tastes or pantry 🧹\n"
-        "/language es|en — language\n"
-        "Or use the buttons below 👇, or just ask for food."
-    ),
-}
 
 
 def t(lang: str, key: str, **kw) -> str:
@@ -365,7 +355,9 @@ def ask_chef(chat_id: int, user_message: str) -> str:
     techs = db.get_techniques(chat_id)
     learned = [f"{n}(x{c})" for n, c in techs if c > 0]
     available = [n for n, c in techs if c == 0]
+    last_recipe = db.last_recipe_fulltext(chat_id)
     context = (
+        f"REPLY LANGUAGE: {LANG_NAME.get(ulang, 'Spanish')}\n\n"
         f"PROFILE (goals/allergies/region/diet):\n{(u['profile'] if u else None) or '(none yet)'}\n\n"
         f"EQUIPMENT & METHODS:\n{(u['equipment'] if u else None) or '(unknown)'}\n\n"
         f"SELF-REPORTED SKILL: {(u['skill'] if u else None) or '(unspecified)'}\n"
@@ -375,6 +367,8 @@ def ask_chef(chat_id: int, user_message: str) -> str:
         f"PANTRY:\n{', '.join(pantry) if pantry else '(empty)'}\n\n"
         f"TASTE HISTORY (recent reactions):\n{chr(10).join(tastes) if tastes else '(no data yet)'}\n\n"
         f"RECENTLY SERVED (do not repeat):\n{chr(10).join(recipes) if recipes else '(none)'}\n\n"
+        f"YOUR LAST RECIPE (for follow-ups like 'make it spicier', 'without cheese'):\n"
+        f"{last_recipe or '(none)'}\n\n"
         f"USER MESSAGE:\n{user_message}"
     )
     # No extended thinking + capped output + medium effort = much faster.
@@ -479,7 +473,9 @@ def parse_command(text: str):
 
 
 def is_button(text: str, lang: str, key: str) -> bool:
-    return text == t(lang, key)
+    # Match either language's label, so switching language mid-session doesn't
+    # break buttons that Telegram is still showing in the old language.
+    return text in (t("es", key), t("en", key))
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +508,8 @@ def handle_message(chat_id: int, text: str) -> None:
         return
     if action == "redeem":
         if db.redeem_code(arg.strip().upper(), chat_id):
-            send_message(chat_id, t(lang, "activated"), reply_markup=reply_keyboard(lang))
+            send_message(chat_id, t(lang, "activated"))
+            send_message(chat_id, t(lang, "intro"), reply_markup=reply_keyboard(lang))
         else:
             send_message(chat_id, t(lang, "code_bad"))
         return
@@ -556,7 +553,7 @@ def handle_message(chat_id: int, text: str) -> None:
 
     # --- Authorized actions ---------------------------------------------------
     if action == "help":
-        send_message(chat_id, t(lang, "welcome") + "\n\n" + HELP[lang], reply_markup=reply_keyboard(lang))
+        send_message(chat_id, t(lang, "intro"), reply_markup=reply_keyboard(lang))
 
     elif action == "lang":
         new = "en" if arg.lower().startswith("en") else "es"

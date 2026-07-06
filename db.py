@@ -150,6 +150,16 @@ def recent_recipe_titles(chat_id: int, limit: int = 5) -> list[str]:
         return [r["title"] for r in rows]
 
 
+def last_recipe_fulltext(chat_id: int) -> str | None:
+    """The full text of the most recent recipe — lets follow-ups refer to 'it'."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT full_text FROM recipes_served WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        return row["full_text"] if row else None
+
+
 def recipes_today(chat_id: int) -> int:
     """How many recipes this user got today (UTC) — powers the per-user cost cap."""
     with _conn() as conn:
