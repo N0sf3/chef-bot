@@ -296,16 +296,19 @@ def reply_keyboard(lang: str) -> dict:
     }
 
 
-def rating_keyboard(lang: str) -> dict:
-    """Inline buttons under a recipe — tapping logs a taste_event."""
+def rating_keyboard(lang: str, recipe_id: int | None = None) -> dict:
+    """Inline buttons under a recipe — tapping logs a taste_event.
+    The recipe id rides inside callback_data so a rating always lands on the
+    dish it sits under, not whatever was cooked most recently."""
+    rid = f":{recipe_id}" if recipe_id else ""
     return {
         "inline_keyboard": [
             [
-                {"text": t(lang, "r_love"), "callback_data": "rate:love"},
-                {"text": t(lang, "r_no"), "callback_data": "rate:no"},
+                {"text": t(lang, "r_love"), "callback_data": f"rate:love{rid}"},
+                {"text": t(lang, "r_no"), "callback_data": f"rate:no{rid}"},
             ],
             [
-                {"text": t(lang, "r_spicy"), "callback_data": "rate:spicy"},
+                {"text": t(lang, "r_spicy"), "callback_data": f"rate:spicy{rid}"},
                 {"text": t(lang, "r_again"), "callback_data": "rate:again"},
             ],
         ]
@@ -453,12 +456,12 @@ def cook_and_send(chat_id: int, lang: str, request: str) -> None:
     reply = ask_chef(chat_id, request)
     techs_used, reply = extract_techniques(reply)  # pull + strip the trailer
     db.practice_techniques(chat_id, techs_used)     # level up the tree
-    db.log_recipe(chat_id, reply)
+    recipe_id = db.log_recipe(chat_id, reply)
     old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
     up = levels.leveled_up(old, new, lang)
     if up:
         reply += t(lang, "levelup", v=up)
-    send_message(chat_id, reply, reply_markup=rating_keyboard(lang))
+    send_message(chat_id, reply, reply_markup=rating_keyboard(lang, recipe_id))
 
 
 # ---------------------------------------------------------------------------
@@ -482,10 +485,13 @@ def is_button(text: str, lang: str, key: str) -> bool:
 # ---------------------------------------------------------------------------
 # Message handling
 # ---------------------------------------------------------------------------
+MAX_INPUT_CHARS = 1500  # nobody asks for dinner in more; caps prompt cost
+
+
 def handle_message(chat_id: int, text: str) -> None:
     db.ensure_user(chat_id)
     lang = db.get_lang(chat_id)
-    text = text.strip()
+    text = text.strip()[:MAX_INPUT_CHARS]
     action, arg = parse_command(text)
 
     # Map reply-keyboard taps (which arrive as plain text) to actions
@@ -703,9 +709,16 @@ def handle_callback(chat_id: int, data: str, callback_id: str) -> None:
         return
 
     if data.startswith("rate:"):
-        kind = data.split(":", 1)[1]
-        last = db.recent_recipe_titles(chat_id, limit=1)
-        dish = last[0] if last else "?"
+        # Format: rate:<kind>[:<recipe_id>] — the id pins the rating to the exact
+        # dish under the buttons. Old buttons without an id fall back to latest.
+        parts = data.split(":")
+        kind = parts[1] if len(parts) > 1 else ""
+        dish = None
+        if len(parts) > 2 and parts[2].isdigit():
+            dish = db.recipe_title_by_id(chat_id, int(parts[2]))
+        if dish is None:
+            last = db.recent_recipe_titles(chat_id, limit=1)
+            dish = last[0] if last else "?"
         note = {
             "love": f"👍 le encantó: {dish}",
             "no": f"👎 no le gustó: {dish}",
@@ -744,7 +757,9 @@ def main() -> None:
     db.init()
     register_commands()
     print("Chef bot v0.4 corriendo. Ctrl+C para apagar.")
-    offset = None
+    # Offset survives restarts (kv table) so a redeploy never re-answers
+    # messages that were already processed.
+    offset = db.get_offset()
     while True:
         try:
             resp = requests.get(
@@ -755,6 +770,7 @@ def main() -> None:
             )
             for update in resp.json().get("result", []):
                 offset = update["update_id"] + 1
+                db.set_offset(offset)
 
                 if "callback_query" in update:
                     cq = update["callback_query"]

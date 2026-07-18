@@ -132,13 +132,25 @@ def recent_tastes(chat_id: int, limit: int = 15) -> list[str]:
 # ---------------------------------------------------------------------------
 # recipes_served
 # ---------------------------------------------------------------------------
-def log_recipe(chat_id: int, full_text: str) -> None:
+def log_recipe(chat_id: int, full_text: str) -> int:
+    """Store the recipe; return its row id so ratings can reference THIS dish."""
     title = full_text.strip().splitlines()[0][:200] if full_text.strip() else "(sin título)"
     with _conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO recipes_served (chat_id, title, full_text) VALUES (?, ?, ?)",
             (chat_id, title, full_text),
         )
+        return cur.lastrowid
+
+
+def recipe_title_by_id(chat_id: int, recipe_id: int) -> str | None:
+    """Title of a specific recipe — chat_id checked so ratings can't cross users."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT title FROM recipes_served WHERE id = ? AND chat_id = ?",
+            (recipe_id, chat_id),
+        ).fetchone()
+        return row["title"] if row else None
 
 
 def recent_recipe_titles(chat_id: int, limit: int = 5) -> list[str]:
@@ -169,6 +181,24 @@ def recipes_today(chat_id: int) -> int:
             (chat_id,),
         ).fetchone()
         return row["n"] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# kv — tiny key/value store (currently: the Telegram update offset)
+# ---------------------------------------------------------------------------
+def get_offset() -> int | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT v FROM kv WHERE k = 'tg_offset'").fetchone()
+        return int(row["v"]) if row else None
+
+
+def set_offset(offset: int) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO kv (k, v) VALUES ('tg_offset', ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            (str(offset),),
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS access_codes (
     created  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Tiny key/value store: survives restarts (e.g. the Telegram update offset,
+-- so a redeploy never re-processes messages it already answered).
+CREATE TABLE IF NOT EXISTS kv (
+    k  TEXT PRIMARY KEY,
+    v  TEXT NOT NULL
+);
+
 -- The technique skill tree, per user. Derived from their equipment (what their
 -- tools ENABLE = available), then leveled up as they actually cook (practiced).
 CREATE TABLE IF NOT EXISTS user_techniques (
