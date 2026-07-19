@@ -27,11 +27,14 @@ CREATE TABLE IF NOT EXISTS taste_events (
 );
 
 -- Everything the chef has cooked, so it never repeats and can reference dishes.
+-- `structured` holds the RECIPE_JSON trailer (schema.org-ish) when the model
+-- emitted one — powers the MyFitnessPal-importable recipe pages.
 CREATE TABLE IF NOT EXISTS recipes_served (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id    INTEGER NOT NULL,
     title      TEXT NOT NULL,
     full_text  TEXT NOT NULL,
+    structured TEXT,
     created    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

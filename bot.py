@@ -90,6 +90,19 @@ use regional/seasonal produce for their region; season in layers.
 TECHNIQUE TREE: the user has a skill tree tied to their equipment. Prefer \
 techniques they've already LEARNED; you may introduce ONE from their AVAILABLE \
 list and teach it briefly. Never use a technique their equipment can't do.
+
+MACHINE TRAILERS (parsed by the app, stripped before the user sees anything):
+When your reply contains a full recipe, add this line right before the \
+TECHNIQUES line — ONE single line of valid JSON, keys exactly as shown:
+RECIPE_JSON: {"name":"...","recipeYield":"2 servings","recipeIngredient":\
+["200 g chicken breast","1 tbsp olive oil"],"recipeInstructions":\
+["step one...","step two..."],"nutrition":{"calories":"520 kcal",\
+"proteinContent":"42 g","carbohydrateContent":"35 g","fatContent":"22 g"}}
+- text values in REPLY LANGUAGE; keys always exactly as shown
+- recipeIngredient: one entry per ingredient, format "quantity unit ingredient", \
+clean and food-database-friendly — NO prose like "finely chopped, or to taste"
+- nutrition: your best realistic PER-SERVING estimate for the recipe as written
+- skip this line entirely when the reply is not a recipe (questions, chit-chat)
 At the VERY END of your reply, on its own final line, output exactly:
 TECHNIQUES: name1, name2, name3
 — the short lowercase cooking techniques this recipe uses, IN THE SAME LANGUAGE \
@@ -377,8 +390,9 @@ def ask_chef(chat_id: int, user_message: str) -> str:
     )
     # No extended thinking + capped output + medium effort = much faster.
     # Recipe generation doesn't need deep reasoning; speed matters more here.
+    # 1800: room for the recipe + RECIPE_JSON + TECHNIQUES trailers.
     response = client.messages.create(
-        model=MODEL, max_tokens=1500,
+        model=MODEL, max_tokens=1800,
         output_config={"effort": "medium"},
         system=SYSTEM_PROMPT, messages=[{"role": "user", "content": context}],
     )
@@ -394,6 +408,23 @@ def extract_techniques(text: str) -> tuple[list[str], str]:
     names = [x.strip().lower() for x in m.group(1).split(",") if x.strip()]
     cleaned = (text[: m.start()] + text[m.end():]).strip()
     return names, cleaned
+
+
+def extract_recipe_json(text: str) -> tuple[str | None, str]:
+    """Pull the 'RECIPE_JSON: ...' trailer out; return (json_str|None, cleaned).
+    The line is ALWAYS stripped (even malformed — junk must never reach the
+    user); the JSON is stored only if it actually parses."""
+    m = re.search(r"(?im)^\s*RECIPE_JSON:\s*(.*)\s*$", text)
+    if not m:
+        return None, text
+    cleaned = (text[: m.start()] + text[m.end():]).strip()
+    raw = m.group(1).strip()
+    try:
+        import json
+        json.loads(raw)  # validate only; store the raw string
+        return raw, cleaned
+    except (ValueError, TypeError):
+        return None, cleaned
 
 
 def derive_techniques(equipment_text: str, lang: str) -> list[str]:
@@ -454,9 +485,10 @@ def cook_and_send(chat_id: int, lang: str, request: str) -> None:
         return
     send_typing(chat_id)  # 'Chef is typing...' while the model works
     reply = ask_chef(chat_id, request)
-    techs_used, reply = extract_techniques(reply)  # pull + strip the trailer
+    techs_used, reply = extract_techniques(reply)   # pull + strip the trailer
+    structured, reply = extract_recipe_json(reply)  # pull + strip RECIPE_JSON
     db.practice_techniques(chat_id, techs_used)     # level up the tree
-    recipe_id = db.log_recipe(chat_id, reply)
+    recipe_id = db.log_recipe(chat_id, reply, structured)
     old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
     up = levels.leveled_up(old, new, lang)
     if up:

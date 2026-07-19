@@ -36,6 +36,10 @@ def _migrate(conn) -> None:
     for name, decl in wanted.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
+    # recipes_served: structured RECIPE_JSON (added for the MFP export)
+    recipe_cols = {r["name"] for r in conn.execute("PRAGMA table_info(recipes_served)")}
+    if "structured" not in recipe_cols:
+        conn.execute("ALTER TABLE recipes_served ADD COLUMN structured TEXT")
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +136,15 @@ def recent_tastes(chat_id: int, limit: int = 15) -> list[str]:
 # ---------------------------------------------------------------------------
 # recipes_served
 # ---------------------------------------------------------------------------
-def log_recipe(chat_id: int, full_text: str) -> int:
-    """Store the recipe; return its row id so ratings can reference THIS dish."""
+def log_recipe(chat_id: int, full_text: str, structured: str | None = None) -> int:
+    """Store the recipe; return its row id so ratings can reference THIS dish.
+    `structured` is the raw RECIPE_JSON string (schema.org-ish) when the model
+    emitted one — it powers the MyFitnessPal-importable recipe pages."""
     title = full_text.strip().splitlines()[0][:200] if full_text.strip() else "(sin título)"
     with _conn() as conn:
         cur = conn.execute(
-            "INSERT INTO recipes_served (chat_id, title, full_text) VALUES (?, ?, ?)",
-            (chat_id, title, full_text),
+            "INSERT INTO recipes_served (chat_id, title, full_text, structured) VALUES (?, ?, ?, ?)",
+            (chat_id, title, full_text, structured),
         )
         return cur.lastrowid
 
