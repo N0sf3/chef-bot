@@ -16,6 +16,7 @@ import anthropic
 
 import db
 import levels
+import web
 
 # ---------------------------------------------------------------------------
 # Config
@@ -26,6 +27,10 @@ client = anthropic.Anthropic()
 MODEL = os.environ.get("MODEL", "claude-opus-4-8")
 OWNER_ID = os.environ.get("OWNER_ID", "").strip()
 DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "25"))  # recipes/user/day (owner exempt)
+WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))      # recipe-page server
+# Public base for recipe links, e.g. https://chef.dissidentlabs.com
+# Empty = pages still served, but no link shown under recipes (feature dark).
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
 
 def is_owner(chat_id: int) -> bool:
@@ -214,6 +219,7 @@ UI = {
         "r_no": "👎 No fue",
         "r_spicy": "🌶️ Muy picante",
         "r_again": "🔁 Otra",
+        "r_mfp": "🔗 MyFitnessPal",
     },
     "en": {
         "welcome": "🔪 Dissident Labs Chef at your service.",
@@ -279,6 +285,7 @@ UI = {
         "r_no": "👎 Nope",
         "r_spicy": "🌶️ Too spicy",
         "r_again": "🔁 Another",
+        "r_mfp": "🔗 Track in MyFitnessPal",
     },
 }
 
@@ -309,23 +316,25 @@ def reply_keyboard(lang: str) -> dict:
     }
 
 
-def rating_keyboard(lang: str, recipe_id: int | None = None) -> dict:
+def rating_keyboard(lang: str, recipe_id: int | None = None, mfp_url: str | None = None) -> dict:
     """Inline buttons under a recipe — tapping logs a taste_event.
     The recipe id rides inside callback_data so a rating always lands on the
-    dish it sits under, not whatever was cooked most recently."""
+    dish it sits under, not whatever was cooked most recently. When the recipe
+    has a public page, a link row lets the user import it into MyFitnessPal."""
     rid = f":{recipe_id}" if recipe_id else ""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": t(lang, "r_love"), "callback_data": f"rate:love{rid}"},
-                {"text": t(lang, "r_no"), "callback_data": f"rate:no{rid}"},
-            ],
-            [
-                {"text": t(lang, "r_spicy"), "callback_data": f"rate:spicy{rid}"},
-                {"text": t(lang, "r_again"), "callback_data": "rate:again"},
-            ],
-        ]
-    }
+    rows = [
+        [
+            {"text": t(lang, "r_love"), "callback_data": f"rate:love{rid}"},
+            {"text": t(lang, "r_no"), "callback_data": f"rate:no{rid}"},
+        ],
+        [
+            {"text": t(lang, "r_spicy"), "callback_data": f"rate:spicy{rid}"},
+            {"text": t(lang, "r_again"), "callback_data": "rate:again"},
+        ],
+    ]
+    if mfp_url:
+        rows.append([{"text": t(lang, "r_mfp"), "url": mfp_url}])
+    return {"inline_keyboard": rows}
 
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> None:
@@ -488,12 +497,14 @@ def cook_and_send(chat_id: int, lang: str, request: str) -> None:
     techs_used, reply = extract_techniques(reply)   # pull + strip the trailer
     structured, reply = extract_recipe_json(reply)  # pull + strip RECIPE_JSON
     db.practice_techniques(chat_id, techs_used)     # level up the tree
-    recipe_id = db.log_recipe(chat_id, reply, structured)
+    slug = secrets.token_urlsafe(8) if structured else None  # public page id
+    recipe_id = db.log_recipe(chat_id, reply, structured, slug)
     old, new = db.add_xp(chat_id, levels.XP_PER_RECIPE)
     up = levels.leveled_up(old, new, lang)
     if up:
         reply += t(lang, "levelup", v=up)
-    send_message(chat_id, reply, reply_markup=rating_keyboard(lang, recipe_id))
+    mfp_url = f"{BASE_URL}/r/{slug}" if (BASE_URL and slug) else None
+    send_message(chat_id, reply, reply_markup=rating_keyboard(lang, recipe_id, mfp_url))
 
 
 # ---------------------------------------------------------------------------
@@ -788,7 +799,8 @@ def register_commands() -> None:
 def main() -> None:
     db.init()
     register_commands()
-    print("Chef bot v0.4 corriendo. Ctrl+C para apagar.")
+    web.start(WEB_PORT)  # recipe pages (daemon thread; dies with the bot)
+    print("Chef bot v0.9 corriendo. Ctrl+C para apagar.")
     # Offset survives restarts (kv table) so a redeploy never re-answers
     # messages that were already processed.
     offset = db.get_offset()

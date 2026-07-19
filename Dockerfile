@@ -16,5 +16,8 @@ COPY . .
 # palate memory survives redeploys.
 ENV DB_PATH=/data/chef.db
 
+# Recipe pages (MyFitnessPal import) are served on this port.
+EXPOSE 8080
+
 # Start the bot.
 CMD ["python", "bot.py"]
